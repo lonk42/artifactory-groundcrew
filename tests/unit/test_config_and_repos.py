@@ -81,3 +81,33 @@ def test_existing_repository_of_the_wrong_kind_is_reported_not_changed():
     actions = repos.ensure(art, Settings(mirrors=[YUM]), dry_run=True)
     assert actions[0].action == "conflict"
     assert art.created["rocky"]["packageType"] == "rpm"
+
+
+def test_cli_reports_an_unreachable_artifactory_in_one_line(tmp_path, capsys, monkeypatch):
+    import httpx
+
+    from artifactory_groundcrew.cli import app
+
+    class Refused:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __getattr__(self, name):
+            def fail(*a, **k):
+                raise httpx.ConnectError("[Errno 111] Connection refused")
+            return fail
+
+    monkeypatch.setattr(app.ArtifactoryClient, "from_settings", classmethod(lambda cls, s: Refused()))
+    monkeypatch.setattr(app.log, "configure", lambda *a, **k: None)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        f"state_dir: {tmp_path / 'state'}\n"
+        "mirrors:\n  - {name: g, type: generic, remote: r, local: l, generic: {paths: [a]}}\n"
+    )
+    for cmd in (["repos"], ["plan", "g"]):
+        assert app.main(["--config", str(cfg), *cmd]) == 1
+        err = capsys.readouterr().err
+        assert "ConnectError" in err and "Traceback" not in err

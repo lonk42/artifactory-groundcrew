@@ -8,9 +8,12 @@ import os
 import sys
 from pathlib import Path
 
+import httpx
+
 from .. import log, repos
 from ..artifactory import ArtifactoryClient
 from ..config import load
+from ..model import EnumerationError
 from ..state import State
 from ..sync import run_cycle
 from . import render, views
@@ -61,6 +64,17 @@ def main(argv: list[str] | None = None) -> int:
         out(views.cycles(state, args.mirror, args.n), "table")
         return 0
 
+    try:
+        return _with_client(args, settings, state, out)
+    except httpx.HTTPError as exc:
+        print(f"groundcrew: {settings.artifactory_url}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    except EnumerationError as exc:
+        print(f"groundcrew: upstream could not be listed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _with_client(args, settings, state, out) -> int:
     with ArtifactoryClient.from_settings(settings) as client:
         if args.cmd == "plan":
             out(views.plan(client, settings, state, args.mirror, args.full, args.show), "block")
