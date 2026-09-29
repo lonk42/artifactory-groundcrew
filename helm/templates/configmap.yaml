@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "groundcrew.fullname" . }}
+  labels: {{- include "groundcrew.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    artifactory_url: {{ .Values.artifactory.url | quote }}
+    {{- with .Values.artifactory.caCert.existingConfigMap }}
+    artifactory_ca_cert: {{ printf "%s/%s" $.Values.artifactory.caCert.mountPath $.Values.artifactory.caCert.key | quote }}
+    {{- end }}
+    {{- with .Values.artifactory.tokenFile.existingSecret }}
+    artifactory_token_file: {{ printf "%s/%s" $.Values.artifactory.tokenFile.mountPath $.Values.artifactory.tokenFile.key | quote }}
+    {{- end }}
+    state_dir: /var/groundcrew/state
+{{ toYaml .Values.config | indent 4 }}

@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "groundcrew.fullname" . }}
+  labels: {{- include "groundcrew.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One writer per mirror: a second pod during a rollout would race the first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "groundcrew.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "groundcrew.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.securityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: groundcrew
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: GROUNDCREW_CONFIG
+              value: /etc/groundcrew/config/config.yaml
+            {{- if not .Values.artifactory.tokenFile.existingSecret }}
+            - name: GROUNDCREW_ARTIFACTORY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "groundcrew.tokenSecret" . }}
+                  key: {{ .Values.artifactory.tokenKey }}
+            {{- end }}
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/groundcrew/config
+              readOnly: true
+            - name: state
+              mountPath: /var/groundcrew/state
+            {{- with .Values.artifactory.tokenFile.existingSecret }}
+            # Never subPath: Kubernetes does not propagate Secret updates into
+            # one, so a rotated token would freeze at pod start.
+            - name: token
+              mountPath: {{ $.Values.artifactory.tokenFile.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.artifactory.caCert.existingConfigMap }}
+            - name: ca
+              mountPath: {{ $.Values.artifactory.caCert.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- with .Values.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "groundcrew.fullname" . }}
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "groundcrew.fullname" . }}-state
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- with .Values.artifactory.tokenFile.existingSecret }}
+        - name: token
+          secret:
+            secretName: {{ . }}
+        {{- end }}
+        {{- with .Values.artifactory.caCert.existingConfigMap }}
+        - name: ca
+          configMap:
+            name: {{ . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

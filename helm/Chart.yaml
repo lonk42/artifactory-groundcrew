@@ -1,0 +1,6 @@
+apiVersion: v2
+name: artifactory-groundcrew
+description: Keeps public package repositories mirrored inside JFrog Artifactory
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

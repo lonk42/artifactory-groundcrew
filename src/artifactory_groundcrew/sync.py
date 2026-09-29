@@ -1,0 +1,239 @@
+"""One mirror cycle: probe, plan, then packages, metadata, deletions, in that order.
+
+The ordering is the guarantee. Metadata is published only once every package it
+names is in place, and deletions run only after the metadata that stopped naming
+them. A cycle with any failed package publishes nothing further, so the local
+repository keeps serving its previous consistent state and the next cycle retries.
+"""
+
+from __future__ import annotations
+
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, field
+from typing import Callable
+
+from . import log
+from .artifactory import ArtifactoryClient, LocalFile
+from .config import Mirror, Settings
+from .enumerators import enumerate_mirror, probe
+from .model import EnumerationError, RemoteFile, Upstream
+from .state import State
+
+logger = log.get("sync")
+
+# Re-list everything at least this often even when upstream roots are unchanged,
+# so files removed from the local repository by hand come back.
+FULL_CHECK_SECONDS = 86400
+PROGRESS_EVERY = 500
+
+
+class NotFoundUpstream(RuntimeError):
+    pass
+
+
+@dataclass
+class Plan:
+    mirror: str
+    unchanged: bool = False
+    listed: int = 0
+    fetch: list[RemoteFile] = field(default_factory=list)
+    metadata: list[RemoteFile] = field(default_factory=list)
+    delete: list[str] = field(default_factory=list)
+    in_scope: int = 0
+    roots: dict[str, str] = field(default_factory=dict)
+
+    def summary(self) -> dict:
+        return {
+            "listed": self.listed,
+            "fetch": len(self.fetch),
+            "fetch_bytes": sum(f.size or 0 for f in self.fetch),
+            "metadata": len(self.metadata),
+            "delete": len(self.delete),
+            "in_scope": self.in_scope,
+        }
+
+
+@dataclass
+class Result:
+    mirror: str
+    status: str
+    started: float
+    seconds: float = 0.0
+    fetched: int = 0
+    metadata: int = 0
+    deleted: int = 0
+    failed: list[str] = field(default_factory=list)
+    error: str = ""
+    plan: dict = field(default_factory=dict)
+
+    def row(self) -> dict:
+        d = asdict(self)
+        d["failed_count"] = len(self.failed)
+        d["failed"] = self.failed[:20]
+        d["error"] = " ".join(self.error.split())[:300]
+        return {k: v for k, v in d.items() if v not in ("", [], {}, None)}
+
+
+def _needs(want: RemoteFile, have: LocalFile | None) -> bool:
+    if have is None:
+        return True
+    if want.sha256 and have.sha256:
+        return want.sha256 != have.sha256
+    if want.size is not None:
+        return want.size != have.size
+    return False
+
+
+def plan(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: State, *, full: bool = False) -> tuple[Plan, Upstream]:
+    up = Upstream(client, mirror.remote)
+    p = Plan(mirror=mirror.name)
+    prev = state.mirror(mirror.name)
+
+    roots = probe(up, mirror)
+    p.roots = roots
+    stale = time.time() - prev.get("last_full", 0) > FULL_CHECK_SECONDS
+    if (
+        not full
+        and not stale
+        and roots
+        and prev.get("status") == "ok"
+        and prev.get("fingerprint") == mirror.fingerprint()
+        and prev.get("roots") == roots
+    ):
+        p.unchanged = True
+        return p, up
+
+    listing = enumerate_mirror(up, mirror)
+    p.roots = listing.roots or roots
+    local = client.list_files(mirror.local)
+    wanted = {f.path for f in listing.packages} | {m.path for m in listing.metadata}
+
+    # One entry per path. Identical index files share a by-hash path, and two
+    # workers on one path race: one expires it from the cache as the other copies.
+    packages = list({f.path: f for f in listing.packages}.values())
+    metadata = list({m.path: m for m in listing.metadata}.values())
+    p.listed = len(packages)
+    p.fetch = [f for f in packages if _needs(f, local.get(f.path))]
+    p.metadata = [m for m in metadata if _needs(m, local.get(m.path))]
+    scoped = [path for path in local if path.startswith(mirror.scope)]
+    p.in_scope = len(scoped)
+    p.delete = sorted(path for path in scoped if path not in wanted)
+    return p, up
+
+
+def _parallel(workers: int, items: list, fn: Callable, label: str, mirror: str) -> list[tuple[object, Exception]]:
+    """Run fn over items; return (item, error) for each failure."""
+    failures: list[tuple[object, Exception]] = []
+    done = 0
+    last_log = time.monotonic()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(fn, it): it for it in items}
+        for fut in as_completed(futures):
+            done += 1
+            try:
+                fut.result()
+            except Exception as exc:  # noqa: BLE001 - every failure is recorded, none is fatal here
+                failures.append((futures[fut], exc))
+            if done % PROGRESS_EVERY == 0 or time.monotonic() - last_log > 30:
+                last_log = time.monotonic()
+                logger.info("progress", mirror=mirror, stage=label, done=done, total=len(items), failed=len(failures))
+    return failures
+
+
+def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Plan, up: Upstream, result: Result) -> None:
+    remote, cache, local = mirror.remote, f"{mirror.remote}-cache", mirror.local
+
+    def fetch(f: RemoteFile) -> None:
+        if not client.sync_download(remote, f.path):
+            raise NotFoundUpstream("404 through the remote")
+        client.copy(cache, f.path, local)
+
+    failures = _parallel(settings.workers, p.fetch, fetch, "packages", mirror.name)
+    result.fetched = len(p.fetch) - len(failures)
+    if failures:
+        result.status = "failed"
+        result.failed = [f"{it.path}: {exc}" for it, exc in failures]
+        result.error = f"{len(failures)} package(s) failed; metadata and deletions withheld"
+        return
+
+    absent: list[str] = []
+
+    def meta(m: RemoteFile) -> None:
+        if m.path not in up.fresh:
+            client.expire(remote, m.path)
+            if not client.sync_download(remote, m.path):
+                if m.optional:
+                    absent.append(m.path)
+                    return
+                raise NotFoundUpstream("404 through the remote")
+        client.copy(cache, m.path, local)
+
+    body = [m for m in p.metadata if not m.root]
+    roots = [m for m in p.metadata if m.root]
+    failures = _parallel(settings.workers, body, meta, "metadata", mirror.name)
+    if not failures:
+        for m in roots:
+            try:
+                meta(m)
+            except Exception as exc:  # noqa: BLE001
+                failures.append((m, exc))
+                break
+    result.metadata = len(p.metadata) - len(failures) - len(absent)
+    if failures:
+        result.status = "failed"
+        result.failed = [f"{it.path}: {exc}" for it, exc in failures]
+        result.error = "metadata failed; deletions withheld"
+        return
+
+    failures = _parallel(settings.workers, p.delete, lambda path: client.delete(local, path), "deletions", mirror.name)
+    result.deleted = len(p.delete) - len(failures)
+    if failures:
+        result.status = "failed"
+        result.failed = [f"{it}: {exc}" for it, exc in failures]
+        result.error = f"{len(failures)} deletion(s) failed"
+        return
+    result.status = "ok"
+
+
+def run_cycle(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: State, *, full: bool = False, dry_run: bool = False) -> Result:
+    result = Result(mirror=mirror.name, status="failed", started=time.time())
+    t0 = time.monotonic()
+    with state.lock(mirror.name) as held:
+        if not held:
+            result.status = "locked"
+            result.error = "another process is syncing this mirror"
+            return result
+        try:
+            p, up = plan(client, settings, mirror, state, full=full)
+            result.plan = p.summary()
+            if p.unchanged:
+                result.status = "unchanged"
+            elif dry_run:
+                result.status = "dry-run"
+            else:
+                logger.info("cycle.planned", mirror=mirror.name, **p.summary())
+                execute(client, settings, mirror, p, up, result)
+        except EnumerationError as exc:
+            result.status = "enumeration-failed"
+            result.error = str(exc)
+        except Exception as exc:  # noqa: BLE001 - a cycle never takes the daemon down
+            result.status = "failed"
+            result.error = f"{type(exc).__name__}: {exc}"
+        result.seconds = round(time.monotonic() - t0, 1)
+
+        if not dry_run:
+            prev = state.mirror(mirror.name)
+            now = time.time()
+            new = {**prev, "status": result.status, "last_run": now}
+            if result.status == "ok":
+                new.update(fingerprint=mirror.fingerprint(), roots=p.roots, last_ok=now, last_full=now)
+            elif result.status == "unchanged":
+                new.update(status="ok", last_ok=now)
+            state.save_mirror(mirror.name, new)
+            state.record(result.row())
+    level = "info" if result.status in ("ok", "unchanged", "dry-run") else "warning"
+    getattr(logger, level)("cycle.done", mirror=mirror.name, status=result.status, seconds=result.seconds,
+                           fetched=result.fetched, metadata=result.metadata, deleted=result.deleted,
+                           **({"error": result.error} if result.error else {}))
+    return result

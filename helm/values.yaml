@@ -1,0 +1,90 @@
+# artifactory-groundcrew Helm chart
+#
+# One Deployment talking to Artifactory's REST API. It is not a sidecar and
+# needs no access to Artifactory's storage, so it can run in Artifactory's
+# namespace or anywhere that reaches its URL.
+
+image:
+  # Published by this repo's release workflow, or push your own build of the
+  # Dockerfile and set it here. Examples:
+  #   repository: ghcr.io/<owner>/artifactory-groundcrew
+  #   repository: registry.example.com/artifactory-groundcrew
+  repository: ""
+  tag: ""
+  # Stated explicitly: a "latest" tag would otherwise imply Always.
+  pullPolicy: IfNotPresent
+
+artifactory:
+  url: http://artifactory:8082/artifactory
+  # An admin-scoped access token. Creating repositories, copying, deleting and
+  # AQL all need admin rights. Mint it in the UI under User Management.
+  token: ""
+  # Use a Secret you manage instead, holding the token under `tokenKey`.
+  existingSecret: ""
+  tokenKey: token
+  # Read the token from a mounted file, re-read on every request, for tokens
+  # rotated in place. Takes precedence over `token`/`existingSecret`.
+  tokenFile:
+    existingSecret: ""
+    key: token
+    mountPath: /etc/groundcrew/token
+  # Trust a private CA for an https url. Names an existing ConfigMap.
+  caCert:
+    existingConfigMap: ""
+    key: ca.crt
+    mountPath: /etc/groundcrew/ca
+
+# Everything under `config` is rendered into /etc/groundcrew/config.yaml.
+# GROUNDCREW_* environment variables in `env` take precedence over it.
+config:
+  # "source" syncs mirrors; "destination" only creates repositories.
+  role: source
+  # Create the local, remote and virtual repositories the mirrors name.
+  create_repositories: false
+  workers: 8
+  mirrors: []
+  # - name: rocky9-baseos
+  #   type: yum
+  #   remote: rocky-remote
+  #   local: rocky
+  #   virtual: rocky-virtual
+  #   upstream_url: https://dl.rockylinux.org/pub/rocky/
+  #   scope: 9/BaseOS/
+  #   interval_seconds: 3600
+  #   yum:
+  #     paths: [9/BaseOS/x86_64/os]
+  # - name: debian-bookworm
+  #   type: apt
+  #   remote: debian-remote
+  #   local: debian
+  #   upstream_url: https://deb.debian.org/
+  #   scope: debian/
+  #   apt:
+  #     base: debian
+  #     suites: [bookworm, bookworm-updates]
+  #     components: [main]
+  #     architectures: [amd64]
+
+env: []
+
+# Holds the cycle ledger and per-mirror state. Losing it costs one full
+# listing per mirror on the next cycle and the ledger history; nothing else.
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# Set to null (not {}) on platforms that assign arbitrary UIDs.
+securityContext:
+  runAsUser: 1030
+  runAsGroup: 1030
+  fsGroup: 1030
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
