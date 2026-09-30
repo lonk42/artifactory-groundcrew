@@ -36,7 +36,17 @@ def test_overlapping_scopes_in_one_local_repo_are_refused():
     b = {**YUM, "name": "b", "scope": "9/BaseOS/"}
     with pytest.raises(ValidationError, match="overlapping scopes"):
         Settings(mirrors=[a, b])
-    Settings(mirrors=[{**a, "scope": "9/BaseOS/"}, {**b, "scope": "9/AppStream/"}])
+    Settings(mirrors=[{**a, "scope": "9/BaseOS/"},
+                      {**b, "scope": "9/AppStream/", "yum": {"paths": ["9/AppStream/x86_64/os"]}}])
+
+
+def test_paths_outside_scope_are_refused():
+    with pytest.raises(ValidationError, match="outside its scope"):
+        Settings(mirrors=[{**YUM, "scope": "9/AppStream/"}])
+    with pytest.raises(ValidationError, match="outside its scope"):
+        Settings(mirrors=[{"name": "d", "type": "apt", "remote": "r", "local": "l", "scope": "debian/",
+                           "apt": {"base": "", "flat": True}}])
+    Settings(mirrors=[{**YUM, "scope": "9/BaseOS/x86_64/os"}])
 
 
 def test_release_parsing_and_clearsign():
@@ -65,14 +75,6 @@ def test_repos_created_on_source_with_remote_and_virtual():
     assert remote["metadataRetrievalTimeoutSecs"] <= remote["retrievalCachePeriodSecs"]
     assert art.created["rocky-virtual"]["repositories"] == ["rocky", "rocky-remote"]
     assert all(a.action == "exists" for a in repos.ensure(art, s))
-
-
-def test_destination_gets_local_and_virtual_only():
-    art = FakeArtifactory()
-    s = Settings(role="destination", create_repositories=True, mirrors=[YUM])
-    repos.ensure(art, s)
-    assert sorted(art.created) == ["rocky", "rocky-virtual"]
-    assert art.created["rocky-virtual"]["repositories"] == ["rocky"]
 
 
 def test_existing_repository_of_the_wrong_kind_is_reported_not_changed():

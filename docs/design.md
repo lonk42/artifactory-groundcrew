@@ -265,7 +265,6 @@ As built in 0.1.0; [goals.md](goals.md) records the goals it was built to.
 - Enumerators for yum, apt (suite archives and flat repositories) and explicit file lists.
 - Each mirror owns a `scope` in its local repository. Unlisted files under it are deleted, which is how removing a list entry removes its content.
 - Repository creation is optional.
-  A deployment with `role: destination` creates the repositories on an instance filled by other means.
 
 ### When to revisit
 

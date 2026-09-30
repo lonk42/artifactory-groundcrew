@@ -27,7 +27,6 @@ Agreed 2026-09-23.
 8. **Configuration in git.**
    Repository creation is optional and off by default.
    When enabled, Groundcrew creates the repositories its mirrors need on the instance it points at.
-   An instance filled by other means gets its repositories from a deployment with `role: destination`, which creates them and does not sync.
 9. **Talks only to Artifactory.**
    Upstream metadata is read through the remote repository, so the pod needs no internet access.
 10. **Uses existing tools where they fit.**

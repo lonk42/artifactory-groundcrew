@@ -37,21 +37,33 @@ artifactory:
 # Everything under `config` is rendered into /etc/groundcrew/config.yaml.
 # GROUNDCREW_* environment variables in `env` take precedence over it.
 config:
-  # "source" syncs mirrors; "destination" only creates repositories.
-  role: source
   # Create the local, remote and virtual repositories the mirrors name.
   create_repositories: false
+  # Parallel Artifactory requests per cycle (copies, expiries, deletes).
   workers: 8
   mirrors: []
+  #   # Identifies the mirror: the CLI argument, the key of its state file and
+  #   # lock, and the label on its log lines and ledger rows. Not part of what
+  #   # the mirror contains; renaming one costs one full listing.
   # - name: rocky9-baseos
+  #   # yum or apt mirror a whole repository; generic mirrors a list of files.
   #   type: yum
+  #   # Remote repository Artifactory fetches upstream through.
   #   remote: rocky-remote
+  #   # Local repository the mirror is copied into. Clients point here.
   #   local: rocky
+  #   # Optional virtual over the local repository (and the remote, on a source).
   #   virtual: rocky-virtual
+  #   # Upstream root. Only used when creating the remote.
   #   upstream_url: https://dl.rockylinux.org/pub/rocky/
+  #   # Prefix of the local repository this mirror owns: anything under it that
+  #   # the mirror does not list is deleted. Lets several mirrors share one
+  #   # local repository, and cleans up after a path removed from `paths`.
   #   scope: 9/BaseOS/
+  #   # Seconds between cycles. A cycle whose repomd.xml is unchanged is cheap.
   #   interval_seconds: 3600
   #   yum:
+  #     # Repository roots to mirror, each holding repodata/. Must sit under scope.
   #     paths: [9/BaseOS/x86_64/os]
   # - name: debian-bookworm
   #   type: apt
@@ -60,18 +72,26 @@ config:
   #   upstream_url: https://deb.debian.org/
   #   scope: debian/
   #   apt:
+  #     # Directory holding dists/ and pool/, relative to the remote's root.
   #     base: debian
+  #     # Suites under dists/ to mirror.
   #     suites: [bookworm, bookworm-updates]
+  #     # Components within each suite.
   #     components: [main]
+  #     # Binary architectures; "all" is always included.
   #     architectures: [amd64]
 
 env: []
 
 # Holds the cycle ledger and per-mirror state. Losing it costs one full
 # listing per mirror on the next cycle and the ledger history; nothing else.
+# No package or metadata passes through it: every copy happens inside
+# Artifactory. Disabled, the state lives in an emptyDir and resets per pod.
 persistence:
   enabled: true
+  # Empty uses the cluster's default StorageClass.
   storageClass: ""
+  # Small JSON files and a ledger capped at ledger_keep_rows; 1Gi is ample.
   size: 1Gi
 
 resources:

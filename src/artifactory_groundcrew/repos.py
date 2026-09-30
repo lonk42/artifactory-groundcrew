@@ -39,13 +39,11 @@ def wanted(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
 
     for m in settings.mirrors:
         add(m.local, {"rclass": "local", "packageType": "generic", "description": _DESCRIPTION})
-        if settings.role == "source":
-            add(m.remote, _remote_body(m))
+        add(m.remote, _remote_body(m))
         if m.virtual:
-            members = [m.local] + ([m.remote] if settings.role == "source" else [])
             add(m.virtual, {
                 "rclass": "virtual", "packageType": "generic", "description": _DESCRIPTION,
-                "repositories": members, "defaultDeploymentRepo": m.local,
+                "repositories": [m.local, m.remote], "defaultDeploymentRepo": m.local,
             })
     return out
 

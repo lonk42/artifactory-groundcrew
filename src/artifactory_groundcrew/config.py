@@ -109,6 +109,15 @@ class Mirror(BaseModel):
         if self.upstream_url and not self.upstream_url.endswith("/"):
             self.upstream_url += "/"
         self.scope = _dir(self.scope)
+        # A path outside the scope would sync, but nothing would ever delete
+        # its files once it left upstream or the list.
+        if self.apt is not None:
+            roots = [self.apt.base]
+        else:
+            roots = (self.yum or self.generic).paths
+        outside = [p or "/" for p in roots if not p.startswith(self.scope)]
+        if outside:
+            raise ValueError(f"mirror {self.name!r} has paths outside its scope {self.scope!r}: {outside}")
         return self
 
     @property
@@ -135,8 +144,6 @@ class Settings(BaseSettings):
     artifactory_password: str = ""
     artifactory_ca_cert: str = ""
 
-    # "source" syncs mirrors; "destination" only creates repositories.
-    role: Literal["source", "destination"] = "source"
     create_repositories: bool = False
 
     state_dir: Path = Path("/var/groundcrew/state")

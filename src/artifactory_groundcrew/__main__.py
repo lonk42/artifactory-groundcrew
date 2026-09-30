@@ -59,7 +59,7 @@ def main() -> int:
     except (ValidationError, ValueError, OSError) as exc:
         return _park("invalid configuration", error=str(exc))
     log.configure(settings.log_level, settings.log_format)
-    logger.info("started", version=__version__, role=settings.role, mirrors=len(settings.mirrors),
+    logger.info("started", version=__version__, mirrors=len(settings.mirrors),
                 create_repositories=settings.create_repositories, url=settings.artifactory_url)
     try:
         return _loop(settings)
@@ -96,13 +96,12 @@ def _loop(settings: Settings) -> int:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("repos.failed", error=f"{type(exc).__name__}: {exc}")
 
-        if settings.role == "source":
-            for mirror in settings.mirrors:
-                if _stopping:
-                    break
-                if not mirror.enabled or not _due(state, mirror.name, mirror.interval_seconds, settings.retry_seconds):
-                    continue
-                run_cycle(client, settings, mirror, state)
+        for mirror in settings.mirrors:
+            if _stopping:
+                break
+            if not mirror.enabled or not _due(state, mirror.name, mirror.interval_seconds, settings.retry_seconds):
+                continue
+            run_cycle(client, settings, mirror, state)
         _sleep(settings.idle_seconds)
     logger.info("stopped")
     return 0

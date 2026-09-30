@@ -70,8 +70,8 @@ A cycle still deletes nothing when it fails to list upstream, fails a package, o
 ### Repository creation is optional
 
 Groundcrew creates the repositories its mirrors need when configured to, and not otherwise.
-An instance that receives the repositories by other means needs them created too.
-A deployment with `role: destination` creates only the local and virtual repositories there, and does not sync.
+The first build also had `role: destination`, which only created repositories, for an instance filled by replication.
+It was removed on 2026-09-30: replication to other instances is outside Groundcrew, and so is preparing them.
 
 ### Its own Deployment
 

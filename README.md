@@ -36,7 +36,7 @@ Mirrors come in two tiers.
 - **Polling.**
   A cycle reads only `repomd.xml` or `InRelease` until upstream changes, and lists everything at least daily.
 - **Repository creation.**
-  Optional, including on an instance filled by other means (`role: destination`).
+  Optional.
 - **Operator CLI.**
   Status, cycle history, dry-run plans and manual cycles.
 
@@ -78,9 +78,6 @@ config:
 ```
 
 Clients use the local or virtual repository in place of the upstream URL.
-
-For an instance that receives these repositories by other means, such as replication or export and import, install the chart with `config.role: destination` and `config.create_repositories: true`.
-It creates the local and virtual repositories there and does not sync.
 
 Important notes:
 

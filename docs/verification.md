@@ -144,6 +144,7 @@ Same instance. Groundcrew created every repository, and each client used the loc
   Dropping one from the list was refused by the deletion brake (`1 of 2 files (50.0%)`), since removed, then deleted with the brake raised, and the path returned 404.
 - **Unchanged upstream.** Repeat cycles finished `unchanged` in 1.7 to 2.4 s for the three tier 1 mirrors.
 - **Destination role.** Created the local repository and a virtual over it alone, and no remote.
+  The role has since been removed.
 
 Found by the live run, and fixed:
 

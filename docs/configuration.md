@@ -13,7 +13,6 @@ Mirrors are only read from the file.
 | `artifactory_token_file` | | File holding the token, re-read on every request. Outranks `artifactory_token`. |
 | `artifactory_username`, `artifactory_password` | | Basic auth. Outranks both token settings when both are set. |
 | `artifactory_ca_cert` | | PEM bundle file for a private CA. |
-| `role` | `source` | `source` syncs mirrors. `destination` only creates repositories, for an instance filled by other means. |
 | `create_repositories` | `false` | Create the local, remote and virtual repositories the mirrors name. |
 | `state_dir` | `/var/groundcrew/state` | Ledger, per-mirror state and locks. |
 | `workers` | `8` | Parallel requests per cycle. |
@@ -33,7 +32,7 @@ Mirrors are only read from the file.
 | `local` | | Generic local repository key. The mirror lives here. |
 | `virtual` | | Optional virtual repository created over the local one, and the remote on the source. |
 | `upstream_url` | | Upstream root. Only used to create the remote. |
-| `scope` | whole repository | Prefix of the local repository this mirror owns. Unlisted files under it are deleted. |
+| `scope` | whole repository | Prefix of the local repository this mirror owns. Unlisted files under it are deleted. Every path, or the apt `base`, must sit under it. |
 | `interval_seconds` | `3600` | Time between cycles. |
 | `enabled` | `true` | |
 
