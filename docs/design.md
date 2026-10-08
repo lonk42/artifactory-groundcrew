@@ -42,6 +42,7 @@ Requirements:
 
 Requirements 7 to 9 were agreed after this analysis was written, with the design goals in [goals.md](goals.md).
 None of them changes the ranking below.
+Requirements 2, 3 and 7 apply to tier 1 only since 2026-10-08: tier 2 only adds ([below](#tier-2-additive-and-demand-driven)).
 
 ## Where mirrored content lives
 
@@ -179,10 +180,16 @@ Full ecosystem mirrors are out of scope, since the storage is not feasible, so e
 - \* Neither tool removes a tag that upstream deleted.
   Needs a small prune step, or acceptance that deleted tags remain.
 
-D1 is recommended.
-A Docker local repository is an ordinary registry, so these tools push straight into it, and manifests and blobs keep their upstream digests.
-The list sets image, tag rule (exact, regex, newest N) and platforms.
-D2 carries a layout risk: Docker Hub official images sit under `library/` in a remote cache, and the tag-folder layout after a copy is unverified.
+D1 was recommended first: a Docker local repository is an ordinary registry, so these tools push straight into it, and manifests and blobs keep their upstream digests.
+D2 is built instead, on 2026-10-08, once its layout was verified ([verification](verification.md#2026-10-08-groundcrew-030-docker)).
+
+- D1 pulls from the upstream registry, so the pod needs internet access ([goal 9](goals.md#goals)), and every blob passes through the pod on its way back to Artifactory.
+- D2 reads manifests through the remote's registry API and has the remote fetch each blob with a `HEAD`, so no blob passes through the pod.
+- D2's remote cache is the demand signal for [additive tier 2](#tier-2-additive-and-demand-driven), as for PyPI and npm.
+- The remote caches an index at `<image>/<tag>/list.manifest.json` and each platform at `<image>/sha256__<digest>/`; a single-platform tag keeps its manifest and blobs in `<image>/<tag>/`.
+  A copy of those paths into a Docker local repository serves the tag with upstream's digest.
+
+The list sets image, tag and platforms; tag rules (regex, newest N) are not built.
 
 Docker Hub allows 100 pulls per 6 hours unauthenticated ([Docker][docker-limits]), so the sync needs an account.
 
@@ -206,12 +213,100 @@ The list is a requirements file or a `package.json` per set.
 A job runs `pip download` or `npm install` through the remote, copies what landed from the `-cache` into the local repository, then calls the reindex API.
 PyPI needs one run per target Python version and platform:
 a wheel list resolved on Python 3.12 x86_64 does not serve a 3.11 or aarch64 client.
+Built as `pip install --dry-run --report` per requirement and target, which names the closure without installing it.
+npm is built the same way with `npm install --package-lock-only` per spec, which reads only package metadata; `os` and `cpu` filters stand in for PyPI's targets.
+Groundcrew copies those files with the Y6 core, and Artifactory maintains the local index on every copy and delete, so no reindex call is needed.
 P4 is the step up if version rules ("newest 3 releases") or upstream deletions (yanked releases, unpublished versions) need handling, which P3 does not do.
 
 ### Generic
 
 A Generic remote per upstream host, with explicit paths in the list, fetched and copied with the Y6 core.
 No other option adds anything here.
+
+### Tier 2: additive and demand-driven
+
+Agreed and built 2026-10-08, after PyPI.
+Two changes to tier 2: clients' pulls through the remote add to the mirror, and tier 2 deletes nothing.
+The reasons are in [background](background.md#tier-2-only-adds).
+
+#### The signal
+
+The remote's `-cache` repository.
+A client using the virtual repository is served from the local repository first, so the cache only receives what the mirror lacks.
+Each cycle lists the cache, and a package file not in the local repository is new demand.
+Index pages and package metadata (`.pypi/`, `.npm/`, `.jfrog/`) are not demand, and neither is anything Groundcrew's own user cached.
+
+Groundcrew's own resolution also downloads through the remote, but only what is already wanted, so it never appears as new demand.
+Demand needs the remote, so it exists on the source instance only.
+
+#### What a pull means
+
+A cached file is one client's run: one Python version, one platform, and only what that client did not already have.
+A client's own pip cache, `--no-deps`, a failed install, or a resolver rejecting a version it downloaded all leave the cached set different from an installable closure.
+
+| Option | Requester served from local | Targets complete | Cost |
+|---|:---:|:---:|---|
+| **D-a.** Copy the pulled files | ✅ | ❌ | One copy per file |
+| **D-b.** Resolve `name==version` for the configured targets | ❌\* | ✅ | pip per package per target |
+| **D-c.** Both | ✅ | ✅ | Both |
+
+- \* Unless the requester's platform is a target.
+
+D-c is chosen.
+On the source, a gap left by D-a is repaired by later demand, since the virtual falls back to the remote.
+A client of the local repository alone, such as an air-gapped destination, has nothing to fall back to, and needs D-b's complete closures.
+The name and version come from the file name; a pulled sdist is copied, and its targets resolve to wheels.
+npm demand resolves `name@version` with the mirror's `os` and `cpu` filters.
+Docker demand resolves the pulled `image:tag` for the configured platforms.
+Tags move, so Docker tags brought in by demand are resolved again whenever the list is, found from their `groundcrew.requirement` properties.
+Generic demand is D-a, since there is nothing to resolve.
+
+#### Provenance
+
+Which files came from the list and which from demand, recorded without state of Groundcrew's own.
+
+| Option | Survives a cache cleanup | Stateless | Cost per cycle |
+|---|:---:|:---:|---|
+| The cache is the list | ❌ | ✅ | None |
+| Groundcrew's state volume | ✅ | ❌ | None |
+| A pull request to the config repository | ✅ | ✅ | Git credentials and a reviewer |
+| **Artifactory properties on each file** | ✅ | ✅ | One call per newly copied file |
+
+Properties are chosen, set once when a file is copied in:
+
+| Property | Value |
+|---|---|
+| `groundcrew.source` | `config` or `demand` |
+| `groundcrew.requirement` | The list entry, or the `name==version` inferred from a pull |
+| `groundcrew.pulled_by` | The cache file's `created_by`; demand only |
+| `groundcrew.ingested` | When it was copied |
+
+They record why a file first arrived; a file later wanted for a second reason is not re-tagged.
+One AQL query on `@groundcrew.source` lists either kind.
+Replication carries properties to destination instances.
+Verified on Artifactory 7.172.6: a PyPI local accepts multi-valued properties, AQL finds files by them, and the package index is unaffected.
+
+#### Cost
+
+| Step | Calls | Scales with |
+|---|---|---|
+| List the local and the cache | Two AQL queries | Files held |
+| Ingest demand | Copy, pip per target, copy the closure, tag | New pulls |
+| Resolve the list | pip per entry per target | The list; daily |
+
+Once copied, a pulled file is in the local repository and drops out of the comparison, so nothing is processed twice.
+The list is re-resolved daily, using the same `last_full` rule as tier 1, since only unpinned entries change and nothing is deleted.
+Demand is ingested every cycle.
+
+#### Not solved
+
+- **Removal.** Deferred; see [background](background.md#open-questions).
+- **Retries.** A pulled package that does not resolve for a target is copied anyway, and is not new demand again.
+  A transient pip failure leaves that target without it.
+- **New targets.** A target added to the list applies to later pulls; earlier pulls are not resolved for it.
+- **Groundcrew's own identity.** Read from the token's subject (`/access/api/v1/tokens/me`), or the username for basic auth.
+  If it cannot be read, Groundcrew's own downloads count as demand.
+- **Growth.** Every release a client installs through the virtual is demand, and unpinned list entries keep each release they resolved to.
 
 ## Comparison
 
@@ -229,6 +324,7 @@ No other option adds anything here.
 ## Recommendation
 
 Build Y6 as a small sync tool, use D1 for docker, and start PyPI and npm on P3.
+As built, docker uses D2; see [Docker](#docker).
 
 ### Why write code
 
@@ -252,19 +348,19 @@ Build Y6 as a small sync tool, use D1 for docker, and start PyPI and npm on P3.
 
 ### What is not written
 
-- Docker sync: `regsync`, from a list in git.
 - PyPI and npm dependency resolution: the real clients, through the remote.
 
 ### Shape of the tool
 
-As built in 0.1.0; [goals.md](goals.md) records the goals it was built to.
+As built in 0.3.0; [goals.md](goals.md) records the goals it was built to.
 
 - One Deployment running a daemon loop, with per-mirror intervals from a config file in git.
   Not a sidecar: it needs only the REST API, so it runs in Artifactory's namespace or elsewhere.
 - A shared core: compare, fetch through the remote, copy to local, metadata last, prune.
-- Enumerators for yum, apt (suite archives and flat repositories) and explicit file lists.
-- Each mirror owns a `scope` in its local repository. Unlisted files under it are deleted, which is how removing a list entry removes its content.
-- Repository creation is optional.
+- Enumerators for yum, apt (suite archives and flat repositories), explicit file lists, PyPI and npm (resolved by pip and npm through the remote), and Docker tags (read through the remote's registry API).
+- Each tier 1 mirror owns a `scope` in its local repository. Unlisted files under it are deleted, which is how removing a list entry removes its content.
+- Tier 2 only adds: its list, resolved daily, and what clients pull through the remote, each file tagged with why ([Tier 2](#tier-2-additive-and-demand-driven)).
+- Repository creation is optional. Generic repositories use the `simple-default` layout; the REST API otherwise defaults to `maven-2-default`.
 
 ### When to revisit
 

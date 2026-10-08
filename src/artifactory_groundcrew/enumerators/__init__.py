@@ -11,11 +11,18 @@ from typing import Callable
 from ..config import Mirror
 from ..model import Listing, Upstream
 from .apt import enumerate_apt, probe_apt
+from .docker import enumerate_docker, probe_docker
 from .generic import enumerate_generic, probe_generic
+from .npm import enumerate_npm, probe_npm
+from .pypi import enumerate_pypi, probe_pypi
 from .yum import enumerate_yum, probe_yum
 
-_PROBES: dict[str, Callable] = {"yum": probe_yum, "apt": probe_apt, "generic": probe_generic}
-_ENUMERATORS: dict[str, Callable] = {"yum": enumerate_yum, "apt": enumerate_apt, "generic": enumerate_generic}
+_PROBES: dict[str, Callable] = {"yum": probe_yum, "apt": probe_apt, "generic": probe_generic, "pypi": probe_pypi,
+                               "npm": probe_npm, "docker": probe_docker}
+_ENUMERATORS: dict[str, Callable] = {
+    "yum": enumerate_yum, "apt": enumerate_apt, "generic": enumerate_generic, "pypi": enumerate_pypi,
+    "npm": enumerate_npm, "docker": enumerate_docker,
+}
 
 
 def probe(up: Upstream, mirror: Mirror) -> dict[str, str]:

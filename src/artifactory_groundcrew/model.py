@@ -33,6 +33,12 @@ class RemoteFile:
     # Published after every other metadata file, in list order: the file a
     # client reads first (repomd.xml, InRelease) and its signatures.
     root: bool = False
+    # Tier 2 provenance, written as properties when the file is copied in:
+    # "config" or "demand", the list entry or inferred requirement, and for
+    # demand the user whose pull cached it.
+    source: str = ""
+    requirement: str = ""
+    pulled_by: str = ""
 
 
 @dataclass

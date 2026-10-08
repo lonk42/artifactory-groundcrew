@@ -58,6 +58,8 @@ A second full copy was ruled out, which is what leaves Y4 (rclone into WebDAV) a
 
 ### Deletions follow the configuration too
 
+Tier 1 only since 2026-10-08; tier 2 deletes nothing ([below](#tier-2-only-adds)).
+
 Removing a path or list entry deletes its content, rather than freezing it.
 The first build only owned the paths it listed, so removing one would have orphaned its files.
 Each mirror now owns a `scope` in its local repository, and everything unlisted under it is deleted.
@@ -66,6 +68,22 @@ Two mirrors cannot claim overlapping scopes in one repository.
 Groundcrew had a deletion brake, refusing any cycle that deleted more than 5% of a mirror, and it was removed on 2026-09-29.
 Live testing showed ordinary updates to small tier 1 mirrors exceed it: one samba update replaces 26 of the 38 packages in Debian's `bookworm-updates`.
 A cycle still deletes nothing when it fails to list upstream, fails a package, or finds an index that disagrees with its checksum.
+
+### Tier 2 only adds
+
+Tier 2 was first built like tier 1: the list defined the mirror, and removing an entry deleted its content.
+It was changed on 2026-10-08, with two decisions.
+
+- **Clients' pulls are demand.**
+  A package a client pulls through the remote is wanted, and is rehosted.
+  Anyone who can read the remote can add to the mirror, and that is intended.
+- **Tier 2 deletes nothing.**
+  Inferring demand from the remote cache makes deletion unworkable.
+  If the cache were the list, emptying it or enabling cleanup would delete from the local repository, which is the persistence failure that ruled out serving the cache ([Y2](design.md#y2-warm-the-remote-repository-and-serve-its--cache)).
+  If the list were recorded elsewhere, Groundcrew's own pulls would sit in the cache beside the users', and a removed entry would be inferred back.
+
+A curated list rehosts what someone needs, and its removal rarely matters, so tier 2 lost little by dropping deletion.
+Removal is deferred until scale makes it necessary; see [Open questions](#open-questions).
 
 ### Repository creation is optional
 
@@ -113,3 +131,7 @@ Everything in [verification.md](verification.md) ran against a JFrog Cloud insta
 
 - **PyPI and npm index.** Confirm that an Artifactory-built index is acceptable, given the package files stay identical.
 - **Scope at full scale.** Which yum and apt repositories. This sets storage and the first-sync API call count.
+- **Removing from tier 2.** Deferred.
+  A file deleted from a local repository manually comes back while it is still in the remote cache.
+  A package upstream withdraws, including one removed as malware, stays in the mirror.
+  The likely answer is a deny list in git: names or versions removed and never copied again.

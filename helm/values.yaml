@@ -46,7 +46,8 @@ config:
   #   # lock, and the label on its log lines and ledger rows. Not part of what
   #   # the mirror contains; renaming one costs one full listing.
   # - name: rocky9-baseos
-  #   # yum or apt mirror a whole repository; generic mirrors a list of files.
+  #   # yum or apt mirror a whole repository; generic mirrors a list of files;
+  #   # pypi and npm mirror a list of packages (see docs/configuration.md).
   #   type: yum
   #   # Remote repository Artifactory fetches upstream through.
   #   remote: rocky-remote
@@ -56,7 +57,7 @@ config:
   #   virtual: rocky-virtual
   #   # Upstream root. Only used when creating the remote.
   #   upstream_url: https://dl.rockylinux.org/pub/rocky/
-  #   # Prefix of the local repository this mirror owns: anything under it that
+  #   # Tier 1 only. Prefix of the local repository this mirror owns: anything under it that
   #   # the mirror does not list is deleted. Lets several mirrors share one
   #   # local repository, and cleans up after a path removed from `paths`.
   #   scope: 9/BaseOS/

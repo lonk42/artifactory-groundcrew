@@ -1,6 +1,7 @@
 # Design goals
 
 Agreed 2026-09-23.
+Tier 2 amended 2026-10-08: it only adds, and clients' pulls add to it ([design](design.md#tier-2-additive-and-demand-driven)).
 
 ## Goals
 
@@ -13,10 +14,13 @@ Agreed 2026-09-23.
    A tier 1 mirror has no package selection; suites, components and architectures are the only narrowing.
    Tier 2 is everything else: docker, PyPI, npm and generic.
    Syncing a whole ecosystem is not feasible, so a list in git selects what is rehosted, and each entry brings its dependencies.
-3. **Persistent** until upstream removes an item, or until the item is removed from its list.
-   Removing a list entry deletes its content.
-4. **Deletions follow upstream and the lists**, with no deletion brake.
+   What clients pull through the remote is rehosted too.
+3. **Persistent.**
+   Tier 1 content stays until upstream removes it, or until it is removed from its list; removing a list entry deletes its content.
+   Tier 2 content stays once mirrored.
+4. **Tier 1 deletions follow upstream and the lists**, with no deletion brake.
    Upstream's metadata is the authority; see [background](background.md#deletions-follow-the-configuration-too).
+   Tier 2 deletes nothing; see [background](background.md#tier-2-only-adds).
 5. **One copy.**
    Artifactory fetches from upstream through a remote repository and copies into the local repository.
    Groundcrew lists, compares, orders and prunes.
@@ -25,12 +29,14 @@ Agreed 2026-09-23.
    A cycle with any failed package publishes no metadata and deletes nothing.
 7. **Unmirrored content returns 404.**
 8. **Configuration in git.**
+   For tier 2 the list in git is the minimum a mirror holds, and demand adds to it.
    Repository creation is optional and off by default.
    When enabled, Groundcrew creates the repositories its mirrors need on the instance it points at.
 9. **Talks only to Artifactory.**
    Upstream metadata is read through the remote repository, so the pod needs no internet access.
 10. **Uses existing tools where they fit.**
-    `regsync` for docker, the real pip and npm clients for dependency resolution.
+    The real pip and npm clients for dependency resolution.
+    Docker has no resolver to reuse; Groundcrew reads manifests through the remote's registry API.
 
 ## Tenets
 
@@ -51,6 +57,7 @@ Agreed 2026-09-23.
 - **Its own Deployment.** Groundcrew needs only the REST API, so it runs as its own pod, in Artifactory's namespace or elsewhere.
 - **Almost stateless.** Upstream metadata and the local repository are both re-read every cycle, so there is no cursor or snapshot to lose.
   State is a cycle ledger and a lock.
+  Why a tier 2 file was mirrored is recorded on the file, as Artifactory properties.
 
 ## Reading metadata through a remote
 

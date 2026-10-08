@@ -75,15 +75,69 @@ class GenericSource(BaseModel):
         return self
 
 
+class PypiTarget(BaseModel):
+    """One interpreter and platform the mirrored wheels must install on."""
+
+    python: str = Field(pattern=r"^3\.\d+$")
+    # Wheel platform tags, for example manylinux_2_28_x86_64. A manylinux or
+    # musllinux tag also admits every older one, as an installer on that
+    # platform would. Pure-Python wheels are always included.
+    platforms: list[str] = Field(min_length=1)
+
+
+class PypiSource(BaseModel):
+    """A list of requirements, each resolved with its dependencies by pip.
+
+    Each entry is resolved on its own for each target, so one entry that cannot
+    be resolved does not change what another one brings.
+    """
+
+    requirements: list[str] = Field(min_length=1)
+    targets: list[PypiTarget] = Field(min_length=1)
+
+
+class NpmSource(BaseModel):
+    """A list of package specs, each resolved with its dependencies by npm.
+
+    npm's lockfile names every platform's optional packages. ``os`` and ``cpu``
+    keep only those for the listed platforms; empty keeps all.
+    """
+
+    packages: list[str] = Field(min_length=1)
+    os: list[str] = Field(default_factory=list)
+    cpu: list[str] = Field(default_factory=list)
+
+
+class DockerSource(BaseModel):
+    """A list of image tags, each copied with the manifests and blobs it names.
+
+    ``platforms`` keeps only those entries of a multi-platform image, as
+    ``os/architecture`` or ``os/architecture/variant``; empty keeps all.
+    """
+
+    images: list[str] = Field(min_length=1)
+    platforms: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _refs(self) -> "DockerSource":
+        for ref in self.images:
+            name, _, tag = ref.rpartition(":")
+            if not name or "/" in tag or "@" in ref:
+                raise ValueError(f"docker image {ref!r} needs a tag, as name:tag")
+            if "/" not in name:
+                raise ValueError(f"docker image {ref!r} needs its namespace; Docker Hub official images are library/{name}")
+        return self
+
+
 # Tier 1 mirrors a Linux package repository whole and serves it exactly as
 # upstream publishes it; there is no selecting within one. Tier 2 rehosts a
 # curated selection where a whole ecosystem is not feasible.
-TIERS = {"yum": 1, "apt": 1, "generic": 2}
+TIERS = {"yum": 1, "apt": 1, "generic": 2, "pypi": 2, "npm": 2, "docker": 2}
 
 
 class Mirror(BaseModel):
     name: str
-    type: Literal["yum", "apt", "generic"]
+    type: Literal["yum", "apt", "generic", "pypi", "npm", "docker"]
     remote: str
     local: str
     upstream_url: str = ""
@@ -97,10 +151,14 @@ class Mirror(BaseModel):
     yum: YumSource | None = None
     apt: AptSource | None = None
     generic: GenericSource | None = None
+    pypi: PypiSource | None = None
+    npm: NpmSource | None = None
+    docker: DockerSource | None = None
 
     @model_validator(mode="after")
     def _section_matches_type(self) -> "Mirror":
-        sections = {"yum": self.yum, "apt": self.apt, "generic": self.generic}
+        sections = {"yum": self.yum, "apt": self.apt, "generic": self.generic, "pypi": self.pypi,
+                    "npm": self.npm, "docker": self.docker}
         if sections[self.type] is None:
             raise ValueError(f"mirror {self.name!r} has type {self.type!r} but no {self.type}: section")
         extra = [k for k, v in sections.items() if v is not None and k != self.type]
@@ -111,10 +169,14 @@ class Mirror(BaseModel):
         self.scope = _dir(self.scope)
         # A path outside the scope would sync, but nothing would ever delete
         # its files once it left upstream or the list.
+        if self.tier == 2:
+            if self.scope:
+                raise ValueError(f"mirror {self.name!r} is tier 2, which deletes nothing, so scope has no effect; remove it")
+            return self
         if self.apt is not None:
             roots = [self.apt.base]
         else:
-            roots = (self.yum or self.generic).paths
+            roots = self.yum.paths
         outside = [p or "/" for p in roots if not p.startswith(self.scope)]
         if outside:
             raise ValueError(f"mirror {self.name!r} has paths outside its scope {self.scope!r}: {outside}")
@@ -130,7 +192,7 @@ class Mirror(BaseModel):
         A change means a previous cycle's result no longer describes the
         wanted state, so the up-to-date short cut must not apply.
         """
-        body = self.model_dump(include={"type", "remote", "local", "scope", "yum", "apt", "generic"})
+        body = self.model_dump(include={"type", "remote", "local", "scope", "yum", "apt", "generic", "pypi", "npm", "docker"})
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -166,6 +228,9 @@ class Settings(BaseSettings):
             raise ValueError(f"duplicate mirror names: {dupes}")
         for i, a in enumerate(self.mirrors):
             for b in self.mirrors[i + 1:]:
+                # Tier 2 deletes nothing, so only a tier 1 mirror can delete another's files.
+                if a.tier == b.tier == 2:
+                    continue
                 if a.local == b.local and (a.scope.startswith(b.scope) or b.scope.startswith(a.scope)):
                     raise ValueError(
                         f"mirrors {a.name!r} and {b.name!r} share local repository {a.local!r} with "

@@ -12,4 +12,4 @@ def probe_generic(up: Upstream, src: GenericSource) -> dict[str, str]:
 
 
 def enumerate_generic(up: Upstream, src: GenericSource) -> Listing:
-    return Listing(packages=[RemoteFile(path=p) for p in src.paths])
+    return Listing(packages=[RemoteFile(path=p, source="config", requirement=p) for p in src.paths])

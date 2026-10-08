@@ -206,16 +206,31 @@ def test_identical_indexes_sharing_a_by_hash_path_are_planned_once(art, tmp_path
     assert sum("/dep11/by-hash/" in x for x in paths) == 1
 
 
-def test_generic_list_removal_cascades(art, tmp_path):
+def generic_mirror(paths=("tools/a.tgz", "tools/b.tgz")) -> dict:
+    return {"name": "g", "type": "generic", "remote": "r", "local": "l", "generic": {"paths": list(paths)}}
+
+
+def test_generic_list_removal_keeps_content(art, tmp_path):
     art.upstream["r"] = {"tools/a.tgz": b"A", "tools/b.tgz": b"B"}
-    m = {"name": "g", "type": "generic", "remote": "r", "local": "l",
-         "scope": "tools", "generic": {"paths": ["tools/a.tgz", "tools/b.tgz"]}}
-    s = settings(tmp_path, m)
-    assert cycle(art, s).status == "ok"
-    m["generic"]["paths"] = ["tools/a.tgz"]
-    s = settings(tmp_path, m)
-    assert cycle(art, s).status == "ok"
-    assert sorted(art.repos["l"]) == ["tools/a.tgz"]
+    assert cycle(art, settings(tmp_path, generic_mirror())).status == "ok"
+    assert art.props[("l", "tools/a.tgz")]["groundcrew.source"] == "config"
+    r = cycle(art, settings(tmp_path, generic_mirror(["tools/a.tgz"])))
+    assert r.status == "ok" and r.deleted == 0
+    assert sorted(art.repos["l"]) == ["tools/a.tgz", "tools/b.tgz"]
+
+
+def test_generic_demand_copies_the_pulled_file(art, tmp_path):
+    art.upstream["r"] = {"tools/a.tgz": b"A", "tools/other.tgz": b"O"}
+    s = settings(tmp_path, generic_mirror(["tools/a.tgz"]))
+    cycle(art, s)
+    art.user = "alice"
+    art.read("r", "tools/other.tgz")
+    r = cycle(art, s)
+    assert r.status == "ok" and r.plan["demand"] == 1
+    assert art.repos["l"]["tools/other.tgz"] == b"O"
+    assert art.props[("l", "tools/other.tgz")] | {"groundcrew.ingested": ""} == {
+        "groundcrew.source": "demand", "groundcrew.requirement": "tools/other.tgz",
+        "groundcrew.pulled_by": "alice", "groundcrew.ingested": ""}
 
 
 def test_config_change_defeats_the_unchanged_shortcut(art, tmp_path):

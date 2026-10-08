@@ -20,6 +20,11 @@ def mirrors(settings: Settings) -> list[dict[str, Any]]:
             "apt": lambda s: f"{s.base} (flat) {','.join(s.architectures) or 'all arches'}" if s.flat
             else f"{s.base} {','.join(s.suites)} [{','.join(s.components)}] {','.join(s.architectures)}",
             "generic": lambda s: f"{len(s.paths)} file(s)",
+            "pypi": lambda s: f"{len(s.requirements)} requirement(s) for "
+            + ", ".join(f"{t.python} {'/'.join(t.platforms)}" for t in s.targets),
+            "npm": lambda s: f"{len(s.packages)} package(s) for "
+            + (f"{'/'.join(s.os) or 'any os'} {'/'.join(s.cpu) or 'any cpu'}"),
+            "docker": lambda s: f"{len(s.images)} image(s) for {', '.join(s.platforms) or 'all platforms'}",
         }[m.type](src)
         out.append({"name": m.name, "tier": m.tier, "type": m.type, "remote": m.remote, "local": m.local,
                     "scope": m.scope or "/", "interval": m.interval_seconds, "enabled": m.enabled, "source": detail})
@@ -68,6 +73,24 @@ def plan(client: ArtifactoryClient, settings: Settings, state: State, name: str,
     out["sample_metadata"] = [f.path for f in p.metadata[:show]]
     out["sample_delete"] = p.delete[:show]
     return out
+
+
+def provenance(client: ArtifactoryClient, settings: Settings, name: str, source: str | None) -> list[dict[str, Any]]:
+    """Why each tier 2 file was mirrored, from the properties set when it was copied in."""
+    m = settings.mirror(name)
+    rows = []
+    for path, props in sorted(client.list_properties(m.local, "groundcrew.").items()):
+        if source and props.get("groundcrew.source") != source:
+            continue
+        rows.append({
+            # Docker file names repeat across images and platforms; package names do not.
+            "file": path if m.type == "docker" else path.rsplit("/", 1)[-1],
+            "source": props.get("groundcrew.source", ""),
+            "requirement": props.get("groundcrew.requirement", ""),
+            "pulled_by": props.get("groundcrew.pulled_by", ""),
+            "ingested": props.get("groundcrew.ingested", ""),
+        })
+    return rows
 
 
 def _ago(now: float, ts: float | None) -> str:

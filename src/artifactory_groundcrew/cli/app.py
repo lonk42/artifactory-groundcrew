@@ -37,6 +37,9 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sync", help="run one cycle now")
     s.add_argument("mirror")
     s.add_argument("--full", action="store_true", help="list everything even if upstream is unchanged")
+    pv = sub.add_parser("provenance", help="why each file of a tier 2 mirror was mirrored")
+    pv.add_argument("mirror")
+    pv.add_argument("--source", choices=["config", "demand"], help="only files from this source")
     r = sub.add_parser("repos", help="show the repositories mirrors need")
     r.add_argument("--apply", action="store_true", help="create the missing ones")
     return p
@@ -83,6 +86,9 @@ def _with_client(args, settings, state, out) -> int:
             result = run_cycle(client, settings, settings.mirror(args.mirror), state, full=args.full)
             out(result.row(), "block")
             return 0 if result.status in ("ok", "unchanged") else 1
+        if args.cmd == "provenance":
+            out(views.provenance(client, settings, args.mirror, args.source), "table")
+            return 0
         if args.cmd == "repos":
             data = [a.__dict__ for a in repos.ensure(client, settings, dry_run=not args.apply)]
             out(data, "table")

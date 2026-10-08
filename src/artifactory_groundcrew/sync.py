@@ -4,6 +4,9 @@ The ordering is the guarantee. Metadata is published only once every package it
 names is in place, and deletions run only after the metadata that stopped naming
 them. A cycle with any failed package publishes nothing further, so the local
 repository keeps serving its previous consistent state and the next cycle retries.
+
+Tier 2 only adds: its list, resolved at least daily, and what clients pulled
+through the remote since the last cycle. Each file it copies is tagged with why.
 """
 
 from __future__ import annotations
@@ -11,13 +14,14 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
-from . import log
+from . import demand, log
 from .artifactory import ArtifactoryClient, LocalFile
 from .config import Mirror, Settings
 from .enumerators import enumerate_mirror, probe
-from .model import EnumerationError, RemoteFile, Upstream
+from .model import EnumerationError, Listing, RemoteFile, Upstream
 from .state import State
 
 logger = log.get("sync")
@@ -42,6 +46,10 @@ class Plan:
     delete: list[str] = field(default_factory=list)
     in_scope: int = 0
     roots: dict[str, str] = field(default_factory=dict)
+    # The configured list was listed or resolved in full this cycle.
+    full: bool = False
+    demand: int = 0
+    unresolved: list[str] = field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -51,6 +59,7 @@ class Plan:
             "metadata": len(self.metadata),
             "delete": len(self.delete),
             "in_scope": self.in_scope,
+            **({"demand": self.demand, "unresolved": len(self.unresolved)} if self.demand else {}),
         }
 
 
@@ -64,6 +73,7 @@ class Result:
     metadata: int = 0
     deleted: int = 0
     failed: list[str] = field(default_factory=list)
+    unresolved: list[str] = field(default_factory=list)
     error: str = ""
     plan: dict = field(default_factory=dict)
 
@@ -71,6 +81,7 @@ class Result:
         d = asdict(self)
         d["failed_count"] = len(self.failed)
         d["failed"] = self.failed[:20]
+        d["unresolved"] = self.unresolved[:20]
         d["error"] = " ".join(self.error.split())[:300]
         return {k: v for k, v in d.items() if v not in ("", [], {}, None)}
 
@@ -93,17 +104,20 @@ def plan(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: S
     roots = probe(up, mirror)
     p.roots = roots
     stale = time.time() - prev.get("last_full", 0) > FULL_CHECK_SECONDS
-    if (
+    current = (
         not full
         and not stale
-        and roots
         and prev.get("status") == "ok"
         and prev.get("fingerprint") == mirror.fingerprint()
         and prev.get("roots") == roots
-    ):
+    )
+    if mirror.tier == 2:
+        return _plan_tier2(client, mirror, p, up, resolve_list=not current), up
+    if current and roots:
         p.unchanged = True
         return p, up
 
+    p.full = True
     listing = enumerate_mirror(up, mirror)
     p.roots = listing.roots or roots
     local = client.list_files(mirror.local)
@@ -116,10 +130,32 @@ def plan(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: S
     p.listed = len(packages)
     p.fetch = [f for f in packages if _needs(f, local.get(f.path))]
     p.metadata = [m for m in metadata if _needs(m, local.get(m.path))]
-    scoped = [path for path in local if path.startswith(mirror.scope)]
+    scoped = [path for path in local if path.startswith(mirror.scope) and not path.startswith(demand.ARTIFACTORY_OWNED)]
     p.in_scope = len(scoped)
     p.delete = sorted(path for path in scoped if path not in wanted)
     return p, up
+
+
+def _plan_tier2(client: ArtifactoryClient, mirror: Mirror, p: Plan, up: Upstream, *, resolve_list: bool) -> Plan:
+    """The list, when due, and demand. Nothing is deleted."""
+    listing = enumerate_mirror(up, mirror) if resolve_list else Listing()
+    p.full = resolve_list
+    local = client.list_files(mirror.local)
+    listed = {f.path for f in listing.packages}
+    pulled = demand.pulled(client.list_files(f"{mirror.remote}-cache"), set(local) | listed, client.whoami())
+    p.demand = len(pulled)
+    wanted, p.unresolved = demand.expand(up, mirror, pulled) if pulled else ([], [])
+    if resolve_list:
+        moved, failures = demand.refresh(client, up, mirror)
+        wanted += moved
+        p.unresolved += failures
+    # The list's reason wins over demand's for a file both want.
+    packages = list({f.path: f for f in [*wanted, *listing.packages]}.values())
+    p.listed = len(packages)
+    p.fetch = [f for f in packages if _needs(f, local.get(f.path))]
+    if not resolve_list and not pulled:
+        p.unchanged = True
+    return p
 
 
 def _parallel(workers: int, items: list, fn: Callable, label: str, mirror: str) -> list[tuple[object, Exception]]:
@@ -145,9 +181,23 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
     remote, cache, local = mirror.remote, f"{mirror.remote}-cache", mirror.local
 
     def fetch(f: RemoteFile) -> None:
-        if not client.sync_download(remote, f.path):
+        # pip's listing has usually cached a PyPI package already. One it has
+        # not can only be fetched through the remote's PyPI download route.
+        # A Docker remote is only ever asked through the registry API: a Sync
+        # Download 404 there is remembered, and hides the manifest for 30 minutes.
+        if mirror.type == "docker":
+            found = client.docker_fetch(remote, f.path)
+        else:
+            found = client.sync_download(remote, f.path) or (mirror.type == "pypi" and client.pypi_fetch(remote, f.path))
+        if not found:
             raise NotFoundUpstream("404 through the remote")
         client.copy(cache, f.path, local)
+        if f.source:
+            props = {"groundcrew.source": f.source, "groundcrew.requirement": f.requirement,
+                     "groundcrew.ingested": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            if f.pulled_by:
+                props["groundcrew.pulled_by"] = f.pulled_by
+            client.set_properties(local, f.path, props)
 
     failures = _parallel(settings.workers, p.fetch, fetch, "packages", mirror.name)
     result.fetched = len(p.fetch) - len(failures)
@@ -207,6 +257,7 @@ def run_cycle(client: ArtifactoryClient, settings: Settings, mirror: Mirror, sta
         try:
             p, up = plan(client, settings, mirror, state, full=full)
             result.plan = p.summary()
+            result.unresolved = p.unresolved
             if p.unchanged:
                 result.status = "unchanged"
             elif dry_run:
@@ -227,12 +278,16 @@ def run_cycle(client: ArtifactoryClient, settings: Settings, mirror: Mirror, sta
             now = time.time()
             new = {**prev, "status": result.status, "last_run": now}
             if result.status == "ok":
-                new.update(fingerprint=mirror.fingerprint(), roots=p.roots, last_ok=now, last_full=now)
+                new.update(last_ok=now)
+                if p.full:
+                    new.update(fingerprint=mirror.fingerprint(), roots=p.roots, last_full=now)
             elif result.status == "unchanged":
                 new.update(status="ok", last_ok=now)
             state.save_mirror(mirror.name, new)
             state.record(result.row())
     level = "info" if result.status in ("ok", "unchanged", "dry-run") else "warning"
+    for msg in result.unresolved:
+        logger.warning("demand.unresolved", mirror=mirror.name, detail=msg)
     getattr(logger, level)("cycle.done", mirror=mirror.name, status=result.status, seconds=result.seconds,
                            fetched=result.fetched, metadata=result.metadata, deleted=result.deleted,
                            **({"error": result.error} if result.error else {}))

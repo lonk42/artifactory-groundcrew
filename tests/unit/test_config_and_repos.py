@@ -74,6 +74,7 @@ def test_repos_created_on_source_with_remote_and_virtual():
     assert remote["unusedArtifactsCleanupPeriodHours"] == 0
     assert remote["metadataRetrievalTimeoutSecs"] <= remote["retrievalCachePeriodSecs"]
     assert art.created["rocky-virtual"]["repositories"] == ["rocky", "rocky-remote"]
+    assert {b["repoLayoutRef"] for b in art.created.values()} == {"simple-default"}
     assert all(a.action == "exists" for a in repos.ensure(art, s))
 
 

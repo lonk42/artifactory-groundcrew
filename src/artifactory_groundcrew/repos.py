@@ -17,6 +17,11 @@ from .config import Mirror, Settings
 logger = log.get("repos")
 
 _DESCRIPTION = "Managed by artifactory-groundcrew"
+# The REST API defaults every repository to maven-2-default; the UI picks this one for Generic.
+_LAYOUT = "simple-default"
+# Tier 1 and generic mirrors are stored as files; PyPI, npm and Docker need
+# typed repositories so that Artifactory serves them in the client's protocol.
+_PACKAGE_TYPE = {"pypi": "pypi", "npm": "npm", "docker": "docker"}
 
 
 @dataclass
@@ -38,20 +43,24 @@ def wanted(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
             out.append((key, body))
 
     for m in settings.mirrors:
-        add(m.local, {"rclass": "local", "packageType": "generic", "description": _DESCRIPTION})
+        kind = _PACKAGE_TYPE.get(m.type, "generic")
+        add(m.local, {
+            "rclass": "local", "packageType": kind, "repoLayoutRef": _LAYOUT, "description": _DESCRIPTION,
+        })
         add(m.remote, _remote_body(m))
         if m.virtual:
             add(m.virtual, {
-                "rclass": "virtual", "packageType": "generic", "description": _DESCRIPTION,
+                "rclass": "virtual", "packageType": kind, "repoLayoutRef": _LAYOUT, "description": _DESCRIPTION,
                 "repositories": [m.local, m.remote], "defaultDeploymentRepo": m.local,
             })
     return out
 
 
 def _remote_body(m: Mirror) -> dict[str, Any]:
-    return {
+    body = {
         "rclass": "remote",
-        "packageType": "generic",
+        "packageType": _PACKAGE_TYPE.get(m.type, "generic"),
+        "repoLayoutRef": _LAYOUT,
         "url": m.upstream_url,
         "description": _DESCRIPTION,
         "storeArtifactsLocally": True,
@@ -61,6 +70,14 @@ def _remote_body(m: Mirror) -> dict[str, Any]:
         "retrievalCachePeriodSecs": 7200,
         "metadataRetrievalTimeoutSecs": 60,
     }
+    if m.type == "pypi":
+        # upstream_url is where packages are downloaded from (files.pythonhosted.org);
+        # the index pages come from the registry.
+        body.update(pyPIRegistryUrl="https://pypi.org", pyPIRepositorySuffix="simple")
+    if m.type == "docker":
+        # Docker Hub and most registries hand out bearer tokens per request.
+        body.update(enableTokenAuthentication=True)
+    return body
 
 
 def ensure(client: ArtifactoryClient, settings: Settings, *, dry_run: bool = False) -> list[RepoAction]:
@@ -78,8 +95,8 @@ def ensure(client: ArtifactoryClient, settings: Settings, *, dry_run: bool = Fal
             continue
         got_class = (existing.get("rclass") or "").lower()
         got_type = (existing.get("packageType") or "").lower()
-        if got_class != body["rclass"] or got_type != "generic":
-            detail = f"exists as {got_class or '?'} {got_type or '?'}, wanted {body['rclass']} generic"
+        if got_class != body["rclass"] or got_type != body["packageType"]:
+            detail = f"exists as {got_class or '?'} {got_type or '?'}, wanted {body['rclass']} {body['packageType']}"
             logger.warning("repo.conflict", key=key, detail=detail)
             actions.append(RepoAction(key, body["rclass"], "conflict", detail))
         else:

@@ -13,7 +13,7 @@ Mirrors are only read from the file.
 | `artifactory_token_file` | | File holding the token, re-read on every request. Outranks `artifactory_token`. |
 | `artifactory_username`, `artifactory_password` | | Basic auth. Outranks both token settings when both are set. |
 | `artifactory_ca_cert` | | PEM bundle file for a private CA. |
-| `create_repositories` | `false` | Create the local, remote and virtual repositories the mirrors name. |
+| `create_repositories` | `false` | Create the local, remote and virtual repositories the mirrors name: Generic for tier 1 and generic, typed for PyPI, npm and Docker, all with the `simple-default` layout. Existing repositories are left as they are. |
 | `state_dir` | `/var/groundcrew/state` | Ledger, per-mirror state and locks. |
 | `workers` | `8` | Parallel requests per cycle. |
 | `retry_seconds` | `600` | How soon a mirror whose last cycle failed is tried again. |
@@ -27,12 +27,12 @@ Mirrors are only read from the file.
 | Field | Default | Effect |
 | --- | --- | --- |
 | `name` | | Unique name, used by the CLI and the ledger. |
-| `type` | | `yum` or `apt` (tier 1, a whole repository), or `generic` (tier 2, a list of files). A section of the same name holds its source. |
+| `type` | | `yum` or `apt` (tier 1, a whole repository), or `generic`, `pypi`, `npm` or `docker` (tier 2, a list). A section of the same name holds its source. |
 | `remote` | | Remote repository key. Artifactory fetches upstream through it. |
 | `local` | | Generic local repository key. The mirror lives here. |
 | `virtual` | | Optional virtual repository created over the local one, and the remote on the source. |
 | `upstream_url` | | Upstream root. Only used to create the remote. |
-| `scope` | whole repository | Prefix of the local repository this mirror owns. Unlisted files under it are deleted. Every path, or the apt `base`, must sit under it. |
+| `scope` | whole repository | Tier 1: prefix of the local repository this mirror owns. Unlisted files under it are deleted. Every path, or the apt `base`, must sit under it. Refused on tier 2, which deletes nothing. |
 | `interval_seconds` | `3600` | Time between cycles. |
 | `enabled` | `true` | |
 
@@ -59,4 +59,39 @@ Paths are relative to the remote's root, and land at the same path in the local 
 
 | Field | Effect |
 | --- | --- |
-| `paths` | Files to mirror. |
+| `paths` | Files to mirror. A file a client pulls through the remote is mirrored too. |
+
+### `pypi`
+
+| Field | Effect |
+| --- | --- |
+| `requirements` | pip requirement strings, for example `requests==2.32.3` or `pydantic>=2.10,<2.11`. Each is resolved with its dependencies. |
+| `targets` | One or more `{python, platforms}`. `python` is a version such as `"3.12"`; `platforms` are wheel platform tags such as `manylinux_2_28_x86_64`. A manylinux or musllinux tag includes every older one. |
+
+A package a client pulls through the remote is copied, and its `name==version` resolved for each target.
+The remote, local and virtual repositories are PyPI repositories, and `upstream_url` is `https://files.pythonhosted.org/`.
+Clients use `<artifactory_url>/api/pypi/<local>/simple` as their index.
+
+### `npm`
+
+| Field | Effect |
+| --- | --- |
+| `packages` | npm package specs, for example `express@4.21.2` or `esbuild@^0.24`. Each is resolved with its dependencies. |
+| `os` | Keep only optional packages for these operating systems, for example `[linux]`. Empty keeps all. |
+| `cpu` | Keep only optional packages for these CPUs, for example `[x64, arm64]`. Empty keeps all. |
+
+A package a client pulls through the remote is copied, and its `name@version` resolved with the same filters.
+The remote, local and virtual repositories are npm repositories, and `upstream_url` is `https://registry.npmjs.org/`.
+Clients use `<artifactory_url>/api/npm/<local>/` as their registry.
+
+### `docker`
+
+| Field | Effect |
+| --- | --- |
+| `images` | Image tags with their namespace, for example `library/busybox:1.37.0`. Docker Hub official images are under `library/`. |
+| `platforms` | Platforms to keep from a multi-platform image, as `os/architecture` or `os/architecture/variant`, for example `[linux/amd64, linux/arm64]`. Empty keeps all. Attestation manifests for kept platforms are kept. |
+
+An image a client pulls through the remote is copied, and its tag resolved for the same platforms.
+Tags are resolved again daily, including those clients pulled, so a moved tag follows upstream.
+The remote, local and virtual repositories are Docker repositories, and `upstream_url` is `https://registry-1.docker.io/` for Docker Hub.
+Clients pull `<host>/<local>/<image>:<tag>`.

@@ -161,3 +161,90 @@ Observed and left alone:
   The cycle published no metadata, and the next one fetched them.
 - **Absent optional indexes are retried.** Release files list uncompressed variants that upstream does not publish.
   Every full listing asks for them again: 30 of Ubuntu's 76 planned metadata files.
+
+### 2026-10-07, Groundcrew 0.3.0: PyPI
+
+New JFrog Cloud instance, Artifactory 7.172.6.
+Groundcrew created a PyPI remote on `files.pythonhosted.org`, a PyPI local and a virtual.
+Mirror: `requests==2.32.3` and `pydantic>=2.10,<2.11`, for Python 3.11 `manylinux_2_28_x86_64` and Python 3.12 `manylinux_2_28_aarch64`.
+
+- **First sync.** 11 wheels in 14 s, both platforms' `pydantic_core` and `charset_normalizer` among them.
+  The next cycle planned 0 fetches: every local file's sha256 matched the hash pip reported from PyPI.
+- **Client, against the local repository only.**
+  `python:3.11-slim` installed `requests 2.32.3` and `pydantic 2.10.6` with all seven dependencies.
+  `requests==2.31.0` failed with `from versions: 2.32.3`.
+- **Removing a requirement.** Dropping `pydantic` deleted its 5 wheels, and its index pages returned 404 with no reindex call.
+  The `.pypi/` index files Artifactory keeps in the local repository were left alone.
+- **Unresolvable requirement.** The cycle ended `enumeration-failed` with pip's error, deleted nothing, and logged no credentials.
+
+Found by the live run:
+
+- **The remote serves no PEP 658 metadata**, so pip downloads each wheel to read its dependencies.
+  That download caches it in the remote.
+- **Cache paths.** pip fetches `api/pypi/<remote>/packages/packages/<hash path>`, cached at `<hash path>`.
+  Sync Download on `<hash path>` is a 404 until it is cached, and on `packages/<hash path>` caches a second copy under that prefix.
+  Groundcrew fetches anything pip has not cached through pip's route.
+- **pip does not widen `--platform`.** Given `manylinux_2_28_x86_64` it refused every `manylinux_2_17` wheel, so Groundcrew passes each older tag as well.
+- **pip authenticates with basic auth only.** Artifactory accepts an access token as the password with an empty username, and refuses it with any username but the token's own.
+
+### 2026-10-08, Groundcrew 0.3.0: tier 2 demand
+
+Same instance and `pypi` mirror.
+
+- **Pull from another platform.** `MarkupSafe==3.0.2` for Python 3.13 on `macosx_11_0_arm64`, downloaded with `--no-deps` through the virtual.
+  The next cycle found it, and an earlier pull of `six`, as demand.
+  It copied the Mac wheel and resolved `markupsafe==3.0.2` for both Linux targets: 4 files, 4 s.
+- **Provenance.** `groundcrew provenance pypi` listed all 4 as `demand`, with the requirement, the user and the time.
+  The Linux wheels carry the user whose pull caused them.
+- **Client, against the local repository only.** `python:3.11-slim` installed `markupsafe 3.0.2` and `six 1.16.0`.
+- **Next cycle.** `unchanged`: nothing new in the cache, and the list not yet due.
+- **Properties.** Values with `=`, `,` and `;` round-trip through `set_properties`; the package index is unaffected.
+
+Not shown live: excluding Groundcrew's own downloads.
+Groundcrew and the test client shared one token, so the cycle above overrode Groundcrew's identity; unit tests cover the exclusion.
+`/access/api/v1/tokens/me` returned the token's subject, ending in `/users/<name>`, which matches `created_by` on cached files.
+
+### 2026-10-08, Groundcrew 0.3.0: npm
+
+Same instance.
+Groundcrew created an npm remote on `registry.npmjs.org`, an npm local and a virtual.
+Mirror: `express@4.21.2` and `esbuild@0.24.2`, with `os: [linux]` and `cpu: [x64, arm64]`.
+
+- **Resolution.** `npm install --package-lock-only` cached only package metadata (`.npm/<name>/package.json`) in the remote.
+  The lockfile names every platform's optional package with its `os` and `cpu`: 25 for esbuild alone.
+- **First sync.** 72 tarballs in 15 s: express's 69, esbuild, and its `linux-x64` and `linux-arm64` packages.
+- **Client, against the local repository only.** `node:22-slim` installed both, `require("express")` worked, and `npx esbuild --version` ran the native binary.
+  `express@4.21.1` failed with `ETARGET`.
+- **Demand.** `chalk@5.3.0` and `debug@4.4.0` pulled through the virtual were copied and tagged; `debug`'s dependency `ms` was already mirrored.
+  Groundcrew's identity was overridden for this cycle, as in the PyPI demand test.
+- **Image.** The image built with `node` and `npm` from `node:22-slim`, 305 MB; `plan --full` inside it resolved both mirrors.
+
+Found by the live run:
+
+- **Sync Download works for npm tarballs** at the path after `/api/npm/<remote>/`, which is where the remote caches them. PyPI needed its own download route.
+- **The local npm index is built on copy,** as for PyPI, with no reindex call.
+
+### 2026-10-08, Groundcrew 0.3.0: Docker
+
+Same instance.
+Groundcrew created a Docker remote on `registry-1.docker.io`, a Docker local and a virtual.
+Mirror: `library/busybox:1.37.0`, platforms `linux/amd64` and `linux/arm64`.
+
+- **Layout, through the remote's registry API.** The index cached at `library/busybox/1.37.0/list.manifest.json`, and each platform at `library/busybox/sha256__<digest>/` with its blobs.
+  A single-platform tag (`hashicorp/http-echo:0.2.3`) cached its manifest and blobs in `<image>/<tag>/`.
+  Each stored manifest's sha256 is its digest.
+- **Blobs without the bytes.** A `HEAD` on a blob through the remote cached the whole blob (2.5 MB).
+- **First sync.** 13 files, 4 MB, in 10 s: the index, each platform's manifest and two blobs, and each platform's attestation manifest and its blobs.
+  A forced second cycle fetched nothing.
+- **Clients, against the local repository only.** `docker pull` of each platform succeeded, with Docker Hub's digest `sha256:bdf57e52...`, and the amd64 image ran.
+  `linux/s390x` failed with `manifest unknown`.
+- **Demand.** An amd64 pull of `library/alpine:3.20` through the virtual cached 4 files.
+  The next cycle copied them and resolved the tag for both platforms, 15 files, all tagged `demand`; the arm64 image then pulled from the local repository.
+  Groundcrew's identity was overridden for this cycle, as in the PyPI demand test.
+
+Found by the live run:
+
+- **Sync Download and plain GETs do not work on a Docker remote**, and their 404 is cached for `missedRetrievalCachePeriodSecs` (1800 s).
+  After one, the registry API also answered `MANIFEST_UNKNOWN` for that manifest; another platform of the same index still worked.
+  Groundcrew uses only the registry API on Docker remotes.
+- **The registry API takes the access token as a bearer token**, at `<artifactory>/api/docker/<repo>/v2/`.
