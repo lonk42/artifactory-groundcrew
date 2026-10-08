@@ -100,8 +100,11 @@ resources:
     cpu: 100m
     memory: 256Mi
 
-# Set to null (not {}) on platforms that assign arbitrary UIDs.
+# Pod securityContext. Set enabled: false on platforms that assign arbitrary
+# UIDs, such as OpenShift; the image keeps its state dir writable for them.
+# Prefer this to null, which Helm drops when a parent chart sets it.
 securityContext:
+  enabled: true
   runAsUser: 1030
   runAsGroup: 1030
   fsGroup: 1030
