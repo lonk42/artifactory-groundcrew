@@ -78,6 +78,9 @@ class CopyError(RuntimeError):
     pass
 
 
+_NEXT_LINK = re.compile(r'<[^>?]*\?([^>]*)>\s*;\s*rel="?next"?')
+
+
 def _q(path: str) -> str:
     return quote(path.lstrip("/"), safe="/")
 
@@ -241,6 +244,34 @@ class ArtifactoryClient:
             return None
         r.raise_for_status()
         return r.content, r.headers.get("content-type", "").split(";")[0].strip()
+
+    def docker_tags(self, remote: str, image: str) -> list[str] | None:
+        """Every tag of an image, as upstream lists them. None on 404.
+
+        The remote passes upstream's ``Link`` header through unchanged, naming
+        the bare ``/v2/`` path, so each next page is re-based onto the remote.
+        """
+        url = f"{self.base_url}/api/docker/{quote(remote)}/v2/{_q(image)}/tags/list"
+        tags: list[str] = []
+        query = ""
+        while True:
+            page = self._docker_tags_page(url + query)
+            if page is None:
+                return tags if query else None
+            got, link = page
+            tags += got
+            nxt = _NEXT_LINK.search(link)
+            if not nxt:
+                return tags
+            query = "?" + nxt.group(1)
+
+    @retry(**_RETRY)
+    def _docker_tags_page(self, url: str) -> tuple[list[str], str] | None:
+        r = self._http.get(url)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json().get("tags") or [], r.headers.get("link", "")
 
     @retry(**_RETRY)
     def docker_blob(self, remote: str, image: str, digest: str) -> bool:

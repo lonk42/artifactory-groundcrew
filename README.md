@@ -20,7 +20,7 @@ Mirrors come in two tiers.
 | 2 | `generic` | A list of files, rehosted at their upstream paths, plus files clients pull |
 | 2 | `pypi` | A list of requirements and their dependencies, resolved by pip for each target Python and platform, plus packages clients pull |
 | 2 | `npm` | A list of packages and their dependencies, resolved by npm, plus packages clients pull |
-| 2 | `docker` | A list of image tags for chosen platforms, plus images clients pull |
+| 2 | `docker` | A list of image tags, and rules selecting tags by pattern, for chosen platforms, plus images clients pull |
 
 - **Mirrors.**
   yum and apt repositories are stored byte for byte in Generic local repositories, so clients verify upstream signatures with stock keys.
@@ -35,6 +35,7 @@ Mirrors come in two tiers.
 - **Docker.**
   Groundcrew reads each tag's manifests through the remote and has the remote fetch the blobs, then copies them into a Docker local repository.
   Images keep their upstream digests, and platforms not listed return `manifest unknown`.
+  A `follow` rule selects tags by regex, from a floor or the newest N, and copies new ones as upstream publishes them.
   [Detail](docs/configuration.md#docker)
 - **One copy.**
   Artifactory fetches from upstream through a remote repository and copies into the local one; copies cost no storage.
@@ -125,7 +126,7 @@ Every setting is in [docs/configuration.md](docs/configuration.md).
 
 ## CLI
 
-The daemon runs each mirror on its interval.
+The daemon runs each mirror on its interval, and at once when its configuration changes.
 The CLI, run inside the pod, reads its state and runs a cycle on demand.
 
 ```sh
@@ -167,7 +168,6 @@ Alert on the `parked` log event and on the age of each mirror's last successful 
 
 ## TODO
 
-- Docker tag rules: regex, newest N.
 - Example configurations for common upstreams (Rocky, Debian, Ubuntu, EPEL, vendor repositories).
 - Metrics, including the age of each mirror's last successful cycle.
 - End-to-end tests against a live instance, enabled by an environment variable.

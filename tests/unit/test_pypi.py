@@ -196,6 +196,21 @@ def test_a_target_that_cannot_resolve_a_pull_still_copies_the_pulled_file(art, p
     assert MAC in art.repos["py"] and LINUX not in art.repos["py"]
 
 
+def test_no_section_copies_pulls_as_pulled(art, pip, tmp_path):
+    m = {k: v for k, v in mirror().items() if k != "pypi"}
+    assert cycle(art, tmp_path, m).status == "ok" and not art.repos.get("py")
+    pull(art, MAC)
+    r = cycle(art, tmp_path, m)
+    assert r.status == "ok" and MAC in art.repos["py"] and LINUX not in art.repos["py"]
+    assert not pip.runs
+
+
+def test_requirements_need_a_target():
+    with pytest.raises(ValueError, match="at least one target"):
+        Settings(mirrors=[{**mirror(), "pypi": {"requirements": ["requests==2.32.3"]}}])
+    Settings(mirrors=[{**mirror(), "pypi": {"targets": mirror()["pypi"]["targets"]}}])
+
+
 def test_requirement_from_file_names():
     assert pypi.requirement_of("Flask_Extra-1.0-cp313-cp313-macosx_11_0_arm64.whl") == "flask-extra==1.0"
     assert pypi.requirement_of("pkg-1.0-1-py3-none-any.whl") == "pkg==1.0"

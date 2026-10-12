@@ -93,6 +93,18 @@ def test_a_pulled_tarball_brings_its_dependencies(art, runs, tmp_path):
     assert art.props[("js", MS)]["groundcrew.pulled_by"] == "alice"
 
 
+def test_no_section_copies_only_what_clients_pull(art, runs, tmp_path):
+    seen, _ = runs
+    m = {k: v for k, v in mirror().items() if k != "npm"}
+    assert cycle(art, tmp_path, m).status == "ok" and not art.repos.get("js")
+    art.user = "alice"
+    art.read("js-remote", DEBUG)
+    art.user = "groundcrew"
+    r = cycle(art, tmp_path, m)
+    assert r.status == "ok" and {DEBUG, MS} <= set(art.repos["js"])
+    assert seen == ["debug@4.4.0"]
+
+
 def test_an_unresolvable_list_entry_withholds_the_cycle(art, runs, tmp_path):
     _, fail = runs
     fail.add("esbuild@0.24.2")

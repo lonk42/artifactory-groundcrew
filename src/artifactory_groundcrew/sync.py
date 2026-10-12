@@ -20,7 +20,7 @@ from typing import Callable
 from . import demand, log
 from .artifactory import ArtifactoryClient, LocalFile
 from .config import Mirror, Settings
-from .enumerators import enumerate_mirror, probe
+from .enumerators import docker, enumerate_mirror, probe
 from .model import EnumerationError, Listing, RemoteFile, Upstream
 from .state import State
 
@@ -30,6 +30,8 @@ logger = log.get("sync")
 # so files removed from the local repository by hand come back.
 FULL_CHECK_SECONDS = 86400
 PROGRESS_EVERY = 500
+# Failures logged one by one per stage; the rest are counted in the stage summary.
+FAILURES_LOGGED = 50
 
 
 class NotFoundUpstream(RuntimeError):
@@ -146,13 +148,15 @@ def _plan_tier2(client: ArtifactoryClient, mirror: Mirror, p: Plan, up: Upstream
     p.demand = len(pulled)
     wanted, p.unresolved = demand.expand(up, mirror, pulled) if pulled else ([], [])
     if resolve_list:
-        moved, failures = demand.refresh(client, up, mirror)
+        moved, failures = demand.refresh(client, up, mirror, {f.requirement for f in listing.packages})
         wanted += moved
         p.unresolved += failures
     # The list's reason wins over demand's for a file both want.
     packages = list({f.path: f for f in [*wanted, *listing.packages]}.values())
     p.listed = len(packages)
     p.fetch = [f for f in packages if _needs(f, local.get(f.path))]
+    if mirror.type == "docker":
+        p.fetch = docker.one_copy_per_blob(p.fetch, local)
     if not resolve_list and not pulled:
         p.unchanged = True
     return p
@@ -171,10 +175,26 @@ def _parallel(workers: int, items: list, fn: Callable, label: str, mirror: str) 
                 fut.result()
             except Exception as exc:  # noqa: BLE001 - every failure is recorded, none is fatal here
                 failures.append((futures[fut], exc))
-            if done % PROGRESS_EVERY == 0 or time.monotonic() - last_log > 30:
+                if len(failures) <= FAILURES_LOGGED:
+                    logger.warning("item.failed", mirror=mirror, stage=label, path=_path(futures[fut]), error=_describe(exc))
+            if done < len(items) and (done % PROGRESS_EVERY == 0 or time.monotonic() - last_log > 30):
                 last_log = time.monotonic()
                 logger.info("progress", mirror=mirror, stage=label, done=done, total=len(items), failed=len(failures))
+    if items:
+        unlogged = max(0, len(failures) - FAILURES_LOGGED)
+        getattr(logger, "warning" if failures else "info")(
+            "stage.done", mirror=mirror, stage=label, total=len(items), failed=len(failures),
+            **({"unlogged_failures": unlogged} if unlogged else {}))
     return failures
+
+
+def _path(item: object) -> str:
+    return getattr(item, "path", str(item))
+
+
+def _describe(exc: Exception) -> str:
+    """One line: the exception type and message, without httpx's multi-line help text."""
+    return " ".join(f"{type(exc).__name__}: {exc}".split())[:300]
 
 
 def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Plan, up: Upstream, result: Result) -> None:
@@ -203,7 +223,7 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
     result.fetched = len(p.fetch) - len(failures)
     if failures:
         result.status = "failed"
-        result.failed = [f"{it.path}: {exc}" for it, exc in failures]
+        result.failed = [f"{_path(it)}: {_describe(exc)}" for it, exc in failures]
         result.error = f"{len(failures)} package(s) failed; metadata and deletions withheld"
         return
 
@@ -232,7 +252,7 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
     result.metadata = len(p.metadata) - len(failures) - len(absent)
     if failures:
         result.status = "failed"
-        result.failed = [f"{it.path}: {exc}" for it, exc in failures]
+        result.failed = [f"{_path(it)}: {_describe(exc)}" for it, exc in failures]
         result.error = "metadata failed; deletions withheld"
         return
 
@@ -240,7 +260,7 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
     result.deleted = len(p.delete) - len(failures)
     if failures:
         result.status = "failed"
-        result.failed = [f"{it}: {exc}" for it, exc in failures]
+        result.failed = [f"{_path(it)}: {_describe(exc)}" for it, exc in failures]
         result.error = f"{len(failures)} deletion(s) failed"
         return
     result.status = "ok"
@@ -290,5 +310,6 @@ def run_cycle(client: ArtifactoryClient, settings: Settings, mirror: Mirror, sta
         logger.warning("demand.unresolved", mirror=mirror.name, detail=msg)
     getattr(logger, level)("cycle.done", mirror=mirror.name, status=result.status, seconds=result.seconds,
                            fetched=result.fetched, metadata=result.metadata, deleted=result.deleted,
+                           **({"failed": len(result.failed)} if result.failed else {}),
                            **({"error": result.error} if result.error else {}))
     return result

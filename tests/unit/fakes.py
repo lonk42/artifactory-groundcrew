@@ -99,6 +99,12 @@ class FakeArtifactory:
         self._cache(remote, path, body)
         return body, media
 
+    def docker_tags(self, remote, image):
+        """Tags in reverse publishing order, since registries promise no order."""
+        self._log("tags", remote, image)
+        tags = [ref for img, ref in self.docker_refs.get(remote, {}) if img == image and not ref.startswith("sha256:")]
+        return tags[::-1] or None
+
     def docker_fetch(self, remote, path):
         self._log("docker_fetch", remote, path)
         data = self.docker_files.get(remote, {}).get(path)

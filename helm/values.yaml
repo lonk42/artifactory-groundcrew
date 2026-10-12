@@ -47,7 +47,7 @@ config:
   #   # the mirror contains; renaming one costs one full listing.
   # - name: rocky9-baseos
   #   # yum or apt mirror a whole repository; generic mirrors a list of files;
-  #   # pypi and npm mirror a list of packages (see docs/configuration.md).
+  #   # pypi, npm and docker mirror a list of packages or images (see docs/configuration.md).
   #   type: yum
   #   # Remote repository Artifactory fetches upstream through.
   #   remote: rocky-remote

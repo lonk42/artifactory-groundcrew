@@ -5,7 +5,7 @@ import pytest
 
 from artifactory_groundcrew import repos
 from artifactory_groundcrew.artifactory import ArtifactoryClient
-from artifactory_groundcrew.config import Settings
+from artifactory_groundcrew.config import DockerFollow, Settings
 from artifactory_groundcrew.enumerators import docker
 from artifactory_groundcrew.state import State
 from artifactory_groundcrew.sync import run_cycle
@@ -111,6 +111,17 @@ def test_a_pulled_tag_that_moves_is_refreshed_with_the_list(art, tmp_path):
     assert any(p.startswith(f"library/alpine/{folders['linux/amd64']}/") for p in art.repos["dk"])
 
 
+def test_no_section_copies_only_what_clients_pull(art, tmp_path):
+    docker_image(art, "dk-remote", "library/alpine", "3.20")
+    m = {k: v for k, v in mirror().items() if k != "docker"}
+    r = cycle(art, tmp_path, m)
+    assert r.status == "ok" and not art.repos.get("dk")
+    pull(art, ["library/alpine/3.20/list.manifest.json"])
+    r = cycle(art, tmp_path, m)
+    assert r.status == "ok"
+    assert "library/alpine/3.20/list.manifest.json" in art.repos["dk"]
+
+
 def test_a_missing_tag_withholds_the_cycle(art, tmp_path):
     assert cycle(art, tmp_path, mirror()).status == "enumeration-failed"
 
@@ -123,6 +134,104 @@ def test_image_references_need_a_namespace_and_a_tag():
     with pytest.raises(ValueError, match="needs a tag"):
         Settings(mirrors=[mirror([f"{IMAGE}@sha256:abc"])])
     Settings(mirrors=[mirror(["registry.example:5000/team/app:1.0"])])
+
+
+def follow(**rule) -> dict:
+    return {**mirror(images=()), "docker": {"follow": [{"image": IMAGE, **rule}], "platforms": ["linux/amd64"]}}
+
+
+def test_a_rule_copies_the_tags_it_selects(art, tmp_path):
+    for tag in ("1.36.1", "1.37.0", "1.37.0-musl", "latest"):
+        docker_image(art, "dk-remote", IMAGE, tag)
+    r = cycle(art, tmp_path, follow(match=r"\d+\.\d+\.\d+", newest=1))
+    assert r.status == "ok"
+    assert {p.split("/")[2] for p in art.repos["dk"] if p.endswith("list.manifest.json")} == {"1.37.0"}
+    props = art.props[("dk", f"{IMAGE}/1.37.0/list.manifest.json")]
+    assert (props["groundcrew.source"], props["groundcrew.requirement"]) == ("config", f"{IMAGE}:1.37.0")
+
+
+def test_a_new_tag_is_picked_up_within_one_interval(art, tmp_path):
+    docker_image(art, "dk-remote", IMAGE, "1.37.0")
+    m = follow(match=r"[\d.]+", **{"from": "1.37"})
+    cycle(art, tmp_path, m)
+    assert cycle(art, tmp_path, m).status == "unchanged"
+    docker_image(art, "dk-remote", IMAGE, "1.38.0")
+    r = cycle(art, tmp_path, m)
+    assert r.status == "ok"
+    assert f"{IMAGE}/1.38.0/list.manifest.json" in art.repos["dk"]
+
+
+def test_a_rule_for_a_missing_image_withholds_the_cycle(art, tmp_path):
+    assert cycle(art, tmp_path, follow(match=".*", newest=1)).status == "enumeration-failed"
+
+
+def test_a_tag_both_pulled_and_selected_is_resolved_once(art, tmp_path):
+    docker_image(art, "dk-remote", IMAGE, "1.37.0")
+    m = follow(match=r"[\d.]+", newest=1)
+    pull(art, [f"{IMAGE}/1.37.0/list.manifest.json"])
+    cycle(art, tmp_path, m)
+    art.calls.clear()
+    cycle(art, tmp_path, m, full=True)
+    assert [c for c in art.calls if c[0] == "manifest" and c[2] == f"{IMAGE}:1.37.0"] == [("manifest", "dk-remote", f"{IMAGE}:1.37.0")]
+
+
+def test_a_blob_shared_by_two_manifests_is_copied_once(art, tmp_path):
+    docker_image(art, "dk-remote", IMAGE, "1.37.0", platforms=("linux/amd64",))
+    docker_image(art, "dk-remote", IMAGE, "1.38.0", platforms=("linux/amd64",))
+    cycle(art, tmp_path, mirror())
+    # Both tags' manifests name the same blobs.
+    r = cycle(art, tmp_path, mirror([f"{IMAGE}:1.37.0", f"{IMAGE}:1.38.0"]))
+    assert r.status == "ok"
+    assert {p.rsplit("/", 1)[1] for p in art.repos["dk"] if p.startswith(f"{IMAGE}/1.38.0/")} == {"manifest.json"}
+
+
+def rule(**kw) -> DockerFollow:
+    return DockerFollow(image=IMAGE, **kw)
+
+
+def test_selection_is_in_natural_sort_order():
+    tags = ["1.10.0", "1.9.2", "1.2.0", "latest", "1.10.0-rc1"]
+    assert docker.select(tags, rule(match=r"[\d.]+", newest=2)) == ["1.9.2", "1.10.0"]
+    assert docker.select(tags, rule(match=r".*", newest=10)) == ["1.2.0", "1.9.2", "1.10.0", "1.10.0-rc1", "latest"]
+    assert docker.select(["16.4-alpine3.20", "16.4-alpine3.19", "16.4"], rule(match=r".*alpine.*", newest=1)) == ["16.4-alpine3.20"]
+
+
+def test_from_is_a_floor_that_need_not_exist_and_match_is_whole_tag():
+    tags = ["0.16.2", "0.17.0", "0.17.1", "0.18.0", "v0.18.0"]
+    assert docker.select(tags, rule(match=r"[\d.]+", **{"from": "0.17"})) == ["0.17.0", "0.17.1", "0.18.0"]
+    assert docker.select(tags, rule(match=r"\d", **{"from": "0"})) == []
+    assert docker.select(tags, rule(match=r"[\d.]+", **{"from": "0.17.0"}, newest=1)) == ["0.18.0"]
+
+
+def test_rules_need_a_bound_a_valid_regex_and_no_tag():
+    with pytest.raises(ValueError, match="needs from or newest"):
+        rule(match=".*")
+    with pytest.raises(ValueError, match="not a valid regex"):
+        rule(match="(", newest=1)
+    with pytest.raises(ValueError, match="takes no tag"):
+        DockerFollow(image=f"{IMAGE}:1.0", match=".*", newest=1)
+    with pytest.raises(ValueError, match="library/busybox"):
+        DockerFollow(image="busybox", match=".*", newest=1)
+    DockerFollow(image="registry.example:5000/team/app", match=".*", newest=1)
+
+
+def test_docker_tags_follows_next_links_on_the_remote():
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.append(str(req.url))
+        if "last=" not in str(req.url):
+            return httpx.Response(200, json={"tags": ["a", "b"]},
+                                  headers={"link": '</v2/library/busybox/tags/list?last=b&n=2>; rel="next"'})
+        return httpx.Response(200, json={"tags": ["c"]})
+
+    c = ArtifactoryClient("https://art.example/artifactory", verify=False)
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+    assert c.docker_tags("r", IMAGE) == ["a", "b", "c"]
+    base = "https://art.example/artifactory/api/docker/r/v2/library/busybox/tags/list"
+    assert seen == [base, f"{base}?last=b&n=2"]
+    c._http = httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(404)))
+    assert c.docker_tags("r", IMAGE) is None
 
 
 def test_tag_references_from_paths():

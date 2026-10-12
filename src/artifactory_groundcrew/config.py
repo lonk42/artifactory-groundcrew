@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 DEFAULT_CONFIG_PATH = Path("/etc/groundcrew/config.yaml")
@@ -89,11 +90,18 @@ class PypiSource(BaseModel):
     """A list of requirements, each resolved with its dependencies by pip.
 
     Each entry is resolved on its own for each target, so one entry that cannot
-    be resolved does not change what another one brings.
+    be resolved does not change what another one brings. With no targets,
+    a package clients pull is copied as pulled, without resolving it.
     """
 
-    requirements: list[str] = Field(min_length=1)
-    targets: list[PypiTarget] = Field(min_length=1)
+    requirements: list[str] = Field(default_factory=list)
+    targets: list[PypiTarget] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _targets(self) -> "PypiSource":
+        if self.requirements and not self.targets:
+            raise ValueError("pypi requirements need at least one target to resolve for")
+        return self
 
 
 class NpmSource(BaseModel):
@@ -103,19 +111,51 @@ class NpmSource(BaseModel):
     keep only those for the listed platforms; empty keeps all.
     """
 
-    packages: list[str] = Field(min_length=1)
+    packages: list[str] = Field(default_factory=list)
     os: list[str] = Field(default_factory=list)
     cpu: list[str] = Field(default_factory=list)
+
+
+class DockerFollow(BaseModel):
+    """A rule selecting tags of one image from those upstream publishes.
+
+    Tags matching ``match`` are put in natural-sort order; ``from`` keeps those
+    at or after it, then ``newest`` keeps the last N.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    image: str
+    match: str
+    from_: str = Field(default="", alias="from")
+    newest: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _rule(self) -> "DockerFollow":
+        if ":" in self.image.rpartition("/")[2] or "@" in self.image:
+            raise ValueError(f"docker follow image {self.image!r} takes no tag; match selects the tags")
+        if "/" not in self.image:
+            raise ValueError(f"docker follow image {self.image!r} needs its namespace; Docker Hub official images are library/{self.image}")
+        try:
+            re.compile(self.match)
+        except re.error as exc:
+            raise ValueError(f"docker follow match {self.match!r} is not a valid regex: {exc}") from None
+        if not self.from_ and self.newest is None:
+            raise ValueError(f"docker follow for {self.image!r} needs from or newest, or it selects every matching tag ever published")
+        return self
 
 
 class DockerSource(BaseModel):
     """A list of image tags, each copied with the manifests and blobs it names.
 
-    ``platforms`` keeps only those entries of a multi-platform image, as
-    ``os/architecture`` or ``os/architecture/variant``; empty keeps all.
+    The list may be empty, leaving only what clients pull through the remote.
+    ``follow`` adds the tags each rule selects. ``platforms`` keeps only those
+    entries of a multi-platform image, as ``os/architecture`` or
+    ``os/architecture/variant``; empty keeps all.
     """
 
-    images: list[str] = Field(min_length=1)
+    images: list[str] = Field(default_factory=list)
+    follow: list[DockerFollow] = Field(default_factory=list)
     platforms: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -157,6 +197,13 @@ class Mirror(BaseModel):
 
     @model_validator(mode="after")
     def _section_matches_type(self) -> "Mirror":
+        # These sections' fields all have defaults, so the section may be left out.
+        if self.type == "pypi" and self.pypi is None:
+            self.pypi = PypiSource()
+        if self.type == "npm" and self.npm is None:
+            self.npm = NpmSource()
+        if self.type == "docker" and self.docker is None:
+            self.docker = DockerSource()
         sections = {"yum": self.yum, "apt": self.apt, "generic": self.generic, "pypi": self.pypi,
                     "npm": self.npm, "docker": self.docker}
         if sections[self.type] is None:

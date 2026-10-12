@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from . import __version__, log, repos
 from .artifactory import ArtifactoryClient
-from .config import Settings, load
+from .config import Mirror, Settings, load
 from .state import State
 from .sync import run_cycle
 
@@ -99,7 +99,7 @@ def _loop(settings: Settings) -> int:
         for mirror in settings.mirrors:
             if _stopping:
                 break
-            if not mirror.enabled or not _due(state, mirror.name, mirror.interval_seconds, settings.retry_seconds):
+            if not mirror.enabled or not _due(state, mirror, settings.retry_seconds):
                 continue
             run_cycle(client, settings, mirror, state)
         _sleep(settings.idle_seconds)
@@ -107,10 +107,15 @@ def _loop(settings: Settings) -> int:
     return 0
 
 
-def _due(state: State, name: str, interval: int, retry: int) -> bool:
-    """Due after its interval, or sooner after a cycle that did not succeed."""
-    prev = state.mirror(name)
-    wait = interval if prev.get("status", "ok") == "ok" else min(interval, retry)
+def _due(state: State, mirror: Mirror, retry: int) -> bool:
+    """Due after its interval, sooner after a cycle that did not succeed, and at
+    once when its configuration changed since its last full cycle."""
+    prev = state.mirror(mirror.name)
+    ok = prev.get("status", "ok") == "ok"
+    # A failing mirror keeps its old fingerprint; it waits for retry, not every idle loop.
+    if ok and prev.get("fingerprint") not in (None, mirror.fingerprint()):
+        return True
+    wait = mirror.interval_seconds if ok else min(mirror.interval_seconds, retry)
     return time.time() - prev.get("last_run", 0) >= wait
 
 

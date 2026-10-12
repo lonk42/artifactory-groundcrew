@@ -248,3 +248,43 @@ Found by the live run:
   After one, the registry API also answered `MANIFEST_UNKNOWN` for that manifest; another platform of the same index still worked.
   Groundcrew uses only the registry API on Docker remotes.
 - **The registry API takes the access token as a bearer token**, at `<artifactory>/api/docker/<repo>/v2/`.
+
+### 2026-10-09, Groundcrew 0.3.1: Helm chart on Kubernetes
+
+Same instance, with Groundcrew deployed by its Helm chart through Argo CD on a k3s cluster, token inline in the values.
+Mirrors: a Debian `bookworm-updates` apt mirror, and the `pypi`, `npm` and `docker` mirrors above, unchanged.
+
+- **First cycle.** Created the three Debian repositories and found the other nine.
+  Debian copied 38 packages in 18 s; the tier 2 mirrors had nothing new to fetch.
+- **List edit through git.** `click==8.1.7`, `lodash@4.17.21` and `library/alpine:3.21` added in the values.
+  A cycle in the pod resolved and copied each: 1 wheel, 1 tarball and 15 Docker files, all tagged `config`.
+- **Clients, pods on the cluster, against the local repository only.**
+  `python:3.11-slim` installed `click 8.1.7` and `requests 2.32.3`; `click==8.1.6` failed with `from versions: 8.1.7`.
+  `node:22-slim` installed `lodash 4.17.21` and `express 4.21.2`; `lodash@4.17.20` failed with `ETARGET`.
+  The kubelet pulled `<host>/docker/library/alpine:3.21` as a pod image, with Docker Hub's digest `sha256:ce64758a...`.
+
+Found by the run, and fixed in 0.4.0:
+
+- **An edited list waited for the interval.** The daemon decides a mirror is due by time alone.
+  The new pod started after the values changed, saw cycles from 3 minutes earlier, and idled; the cycles above were run with `groundcrew sync` in the pod.
+  A mirror whose fingerprint differs from its last full cycle is now due at once, unless that cycle failed, when it waits for `retry_seconds`.
+- **Failures were not logged.** A cycle ended `failed` with a count and no paths, after a `progress` line still reading `failed=0`.
+  Each failure is now logged as `item.failed` with its path and error, each stage ends with `stage.done`, and `cycle.done` carries the count.
+
+### 2026-10-12, Groundcrew 0.4.0: Docker tag rules
+
+Same instance, now Artifactory 7.173.4; ad hoc CLI runs, not yet on Kubernetes.
+
+- **Tag lists through a remote.** `tags/list` on the Docker Hub remote matched Docker Hub for `library/busybox` (219 tags), `library/hello-world` (10, never cached) and `library/node` (9,170).
+  Nothing was stored in the remote cache.
+  With `?n=100`, the `Link` header names `/v2/...?last=<tag>&n=100`, which Artifactory answers 404; the same query on `/api/docker/<remote>/v2/` returned the next page.
+- **ghcr.** A Docker remote on `https://ghcr.io/` listed all 9 tags of a public image, sorted, and paginated the same way.
+- **Rule.** `match: '\d+\.\d+\.\d+'`, `from: '0.2.0'`, platform `linux/amd64` selected `0.2.0`, `0.3.0` and `0.3.1`, 48 files.
+  The next cycle was `unchanged`.
+- **Client, against the local repository only.** `docker pull --platform linux/amd64` of `0.3.1` succeeded with ghcr's digest `sha256:ea3d10ef...`.
+
+Found by the live run:
+
+- **A blob shared by several manifests of one image is cached once.** The other manifest folders in the remote cache hold an empty entry for it, and copying that fails with `Could not calculate repo path`.
+  The local repository serves the blob by digest from any folder of the image, so Groundcrew now copies each blob once per image.
+

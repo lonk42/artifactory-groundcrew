@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from artifactory_groundcrew.config import Settings
 from artifactory_groundcrew.state import State
@@ -54,6 +55,22 @@ def test_failed_package_withholds_metadata_and_deletions(art, tmp_path):
     assert res.status == "failed"
     assert f"{ROOT}repodata/repomd.xml" not in art.repos["l"]
     assert f"{ROOT}Packages/old.rpm" in art.repos["l"]
+
+
+def test_each_failed_package_is_logged_with_its_path_and_error(art, tmp_path):
+    art.upstream["r"] = yum_repo(ROOT, {"Packages/a.rpm": b"A", "Packages/b.rpm": b"B"})
+    art.fail_download.add(f"{ROOT}Packages/b.rpm")
+    s = settings(tmp_path, yum_mirror())
+    with capture_logs() as logs:
+        res = cycle(art, s)
+    failed = [e for e in logs if e["event"] == "item.failed"]
+    assert [(e["stage"], e["path"]) for e in failed] == [("packages", f"{ROOT}Packages/b.rpm")]
+    assert failed[0]["error"] == f"RuntimeError: simulated failure for {ROOT}Packages/b.rpm"
+    stage = next(e for e in logs if e["event"] == "stage.done")
+    assert (stage["total"], stage["failed"]) == (2, 1)
+    done = next(e for e in logs if e["event"] == "cycle.done")
+    assert done["failed"] == 1
+    assert res.failed == [f"{ROOT}Packages/b.rpm: {failed[0]['error']}"]
 
 
 def test_unchanged_upstream_is_skipped_after_one_repomd_read(art, tmp_path):

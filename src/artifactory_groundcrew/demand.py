@@ -64,14 +64,18 @@ def expand(up: Upstream, mirror: Mirror, files: dict[str, LocalFile]) -> tuple[l
     return out, failures
 
 
-def refresh(client: ArtifactoryClient, up: Upstream, mirror: Mirror) -> tuple[list[RemoteFile], list[str]]:
-    """The current files of every Docker tag demand brought in, so a moved tag follows upstream."""
+def refresh(client: ArtifactoryClient, up: Upstream, mirror: Mirror, listed: set[str]) -> tuple[list[RemoteFile], list[str]]:
+    """The current files of every Docker tag demand brought in, so a moved tag follows upstream.
+
+    ``listed`` holds the references the list just resolved, listed or selected
+    by a rule, which are not resolved twice.
+    """
     if mirror.type != "docker":
         return [], []
     refs: dict[str, str] = {}
     for props in client.list_properties(mirror.local, "groundcrew.").values():
         if props.get("groundcrew.source") == "demand" and docker.ref_of_requirement(props.get("groundcrew.requirement", "")):
             refs.setdefault(props["groundcrew.requirement"], props.get("groundcrew.pulled_by", ""))
-    for ref in mirror.docker.images:
+    for ref in listed:
         refs.pop(ref, None)
     return docker.resolve(up, refs, mirror.docker.platforms, source="demand", strict=False)

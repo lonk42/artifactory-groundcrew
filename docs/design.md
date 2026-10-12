@@ -189,9 +189,75 @@ D2 is built instead, on 2026-10-08, once its layout was verified ([verification]
 - The remote caches an index at `<image>/<tag>/list.manifest.json` and each platform at `<image>/sha256__<digest>/`; a single-platform tag keeps its manifest and blobs in `<image>/<tag>/`.
   A copy of those paths into a Docker local repository serves the tag with upstream's digest.
 
-The list sets image, tag and platforms; tag rules (regex, newest N) are not built.
+The list sets image, tag and platforms; [tag rules](#tag-rules) select tags by pattern.
 
 Docker Hub allows 100 pulls per 6 hours unauthenticated ([Docker][docker-limits]), so the sync needs an account.
+
+#### Tag rules
+
+Built 2026-10-12 ([verification](verification.md#2026-10-12-groundcrew-040-docker-tag-rules)).
+A list entry names one tag, and a moving tag such as `latest` keeps only its current target under its name.
+Following an image's releases needs a rule that selects tags from those upstream publishes.
+
+Tags have no shared scheme: `1.37.0`, `16.4-alpine3.20`, `v2.0`, `2024-05-01`, `latest`.
+
+| Option | Any tag scheme | Backfills | Cost |
+|---|:---:|:---:|---|
+| **T1.** Semver range, as `image>=0.17.0` | ❌ | ✅ | One tag list |
+| **T2.** Regex on the tag, in natural-sort order | ✅ | ✅ | One tag list |
+| **T3.** Tags first seen after the rule was added | ✅ | ❌ | One tag list, and state |
+| **T4.** Order by image creation date | ✅ | ✅ | One config blob per candidate tag |
+
+T2 is built.
+
+- T1 rejects suffix variants and dates.
+  Loose semver, ignoring a `v` prefix and a suffix, still cannot order `alpine3.20` after `alpine3.19`.
+- T3 needs Groundcrew's own state, which [provenance](#provenance) avoids.
+  A lost state volume makes every tag new, or none.
+- T4 reads a blob for every tag the pattern admits, thousands for `library/node`.
+
+```yaml
+docker:
+  follow:
+    - image: library/postgres
+      match: '\d+\.\d+-alpine'
+      from: '16.0-alpine'
+      newest: 5
+```
+
+| Field | Effect |
+|---|---|
+| `image` | The image, with its namespace |
+| `match` | A regex the whole tag must match |
+| `from` | Keep tags at or after this one in natural-sort order. It need not exist upstream |
+| `newest` | Keep the last N in natural-sort order, after `from` |
+
+At least one of `from` and `newest` is required, so a broad pattern cannot select an image's whole history.
+`platforms` applies to every selected tag, as to listed ones.
+
+Natural-sort order splits a tag into runs of digits and non-digits.
+Digit runs compare as numbers, the rest as text, and a digit run sorts before a text run at the same position.
+`1.10.0` follows `1.9.2`, and `16.4-alpine3.20` follows `16.4-alpine3.19`.
+A pre-release sorts after its release (`1.0.0-rc1` after `1.0.0`); `match` excludes pre-releases where that matters.
+
+Each rule lists the image's tags with `GET /v2/<image>/tags/list` through the remote, following pagination, then filters by `match`, `from` and `newest` in that order.
+The selected tags resolve as list entries do, with `groundcrew.source` `config` and `groundcrew.requirement` the `image:tag`.
+
+- **Detection.** `probe` returns a hash of each rule's selected tags, so a new tag starts a resolve within one interval, not at the next daily resolve.
+  The tag list is one call per rule per cycle; a Docker Hub tag list is not a pull.
+- **Removal.** Tier 2 deletes nothing, so a tag that leaves `newest` stays in the local repository.
+  `newest` limits what is fetched, not what is held.
+- **Moved tags.** Each daily resolve reads every selected tag's manifest again, as for listed tags: N manifest pulls per rule per day.
+- **Demand.** A pulled tag that a rule also selects is resolved once, as a listed tag already is in `demand.refresh`.
+
+Verified on Artifactory 7.173.4 before building:
+
+- A Docker remote answers `tags/list` from upstream, for Docker Hub and ghcr, including images it has never cached, with `listRemoteFolderItems` off.
+  Nothing is stored in the remote cache.
+- The remote passes upstream's `Link` header through unchanged, naming the bare `/v2/` path, which Artifactory answers 404.
+  Groundcrew re-bases each next page onto `/api/docker/<remote>/v2/`.
+- Artifactory sorts the list; ghcr's own order is arbitrary. The rule sorts it anyway.
+- Not yet shown: that a tag published upstream appears in the remote's list at once, and is not held for `retrievalCachePeriodSecs`.
 
 ### PyPI and npm
 
