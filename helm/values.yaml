@@ -4,6 +4,10 @@
 # needs no access to Artifactory's storage, so it can run in Artifactory's
 # namespace or anywhere that reaches its URL.
 
+# 1 to run, 0 to stop. Anything else is refused: each mirror allows one
+# writer, and the per-mirror lock does not reach across pods.
+replicas: 1
+
 image:
   # Published by this repo's release workflow, or push your own build of the
   # Dockerfile and set it here. Examples:

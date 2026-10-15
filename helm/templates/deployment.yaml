@@ -4,7 +4,11 @@ metadata:
   name: {{ include "groundcrew.fullname" . }}
   labels: {{- include "groundcrew.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  {{- $replicas := int .Values.replicas }}
+  {{- if not (has $replicas (list 0 1)) }}
+  {{- fail (printf "replicas must be 0 or 1, not %v: each mirror allows one writer" .Values.replicas) }}
+  {{- end }}
+  replicas: {{ $replicas }}
   # One writer per mirror: a second pod during a rollout would race the first.
   strategy:
     type: Recreate
