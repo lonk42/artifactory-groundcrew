@@ -33,6 +33,9 @@ class RemoteFile:
     # Published after every other metadata file, in list order: the file a
     # client reads first (repomd.xml, InRelease) and its signatures.
     root: bool = False
+    # Upstream's modification time, where its listing gives one and no checksum:
+    # a tree's file list. A file whose mtime changes is fetched again.
+    mtime: int | None = None
     # Tier 2 provenance, written as properties when the file is copied in:
     # "config" or "demand", the list entry or inferred requirement, and for
     # demand the user whose pull cached it.
@@ -61,12 +64,19 @@ class Upstream:
         self.client = client
         self.remote = remote
         self.fresh: set[str] = set()
+        # Bodies read with keep=True, so the probe and enumeration of one cycle
+        # share a large index instead of fetching it twice.
+        self.kept: dict[str, bytes] = {}
 
-    def read_metadata(self, path: str) -> bytes | None:
+    def read_metadata(self, path: str, *, keep: bool = False) -> bytes | None:
+        if path in self.kept:
+            return self.kept[path]
         self.client.expire(self.remote, path)
         data = self.client.read(self.remote, path)
         if data is not None:
             self.fresh.add(path)
+            if keep:
+                self.kept[path] = data
         return data
 
 

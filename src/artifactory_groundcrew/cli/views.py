@@ -19,6 +19,7 @@ def mirrors(settings: Settings) -> list[dict[str, Any]]:
             "yum": lambda s: ", ".join(s.paths),
             "apt": lambda s: f"{s.base} (flat) {','.join(s.architectures) or 'all arches'}" if s.flat
             else f"{s.base} {','.join(s.suites)} [{','.join(s.components)}] {','.join(s.architectures)}",
+            "tree": lambda s: f"{s.filelist} include {len(s.include) or 'all'}, exclude {len(s.exclude)}",
             "generic": lambda s: f"{len(s.paths)} file(s)",
             "pypi": lambda s: f"{len(s.requirements)} requirement(s) for "
             + ", ".join(f"{t.python} {'/'.join(t.platforms)}" for t in s.targets),

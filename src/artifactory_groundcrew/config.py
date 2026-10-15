@@ -11,10 +11,10 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 DEFAULT_CONFIG_PATH = Path("/etc/groundcrew/config.yaml")
@@ -35,6 +35,74 @@ class YumSource(BaseModel):
     def _norm(self) -> "YumSource":
         self.paths = [_dir(p) for p in self.paths]
         return self
+
+
+def _glob(pattern: str) -> re.Pattern:
+    """A path glob as a regex: ``*`` and ``?`` stay within one directory, ``**`` crosses them."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+            continue
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[" and "]" in pattern[i + 2:]:
+            j = pattern.index("]", i + 2)
+            body = pattern[i + 1:j]
+            out.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+            i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _pattern(text: str) -> Callable[[str], bool]:
+    """A glob matching the whole path, or with ``re:``, a regex searched for in it."""
+    try:
+        if text.startswith("re:"):
+            return re.compile(text[3:]).search
+        return _glob(text).match
+    except re.error as exc:
+        raise ValueError(f"pattern {text!r} is not valid: {exc}") from None
+
+
+class TreeSource(BaseModel):
+    """Every file under an upstream tree, as its quick-fedora-mirror file list names them.
+
+    ``filelist`` is that list's path, such as ``fullfiletimelist-rocky``.
+    A file is mirrored if it matches an ``include`` pattern, or there are none,
+    and matches no ``exclude`` pattern. Patterns are globs over the path from
+    the remote's root, or regexes when prefixed ``re:``.
+    """
+
+    filelist: str
+    include: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+    _include: list[Callable[[str], bool]] = PrivateAttr(default_factory=list)
+    _exclude: list[Callable[[str], bool]] = PrivateAttr(default_factory=list)
+
+    @model_validator(mode="after")
+    def _compile(self) -> "TreeSource":
+        self.filelist = self.filelist.strip().lstrip("/")
+        if not self.filelist or self.filelist.endswith("/"):
+            raise ValueError(f"tree filelist {self.filelist!r} must name a file")
+        self._include = [_pattern(p) for p in self.include]
+        self._exclude = [_pattern(p) for p in self.exclude]
+        return self
+
+    def selects(self, path: str) -> bool:
+        if self._include and not any(m(path) for m in self._include):
+            return False
+        return not any(m(path) for m in self._exclude)
 
 
 class AptSource(BaseModel):
@@ -170,14 +238,15 @@ class DockerSource(BaseModel):
 
 
 # Tier 1 mirrors a Linux package repository whole and serves it exactly as
-# upstream publishes it; there is no selecting within one. Tier 2 rehosts a
-# curated selection where a whole ecosystem is not feasible.
-TIERS = {"yum": 1, "apt": 1, "generic": 2, "pypi": 2, "npm": 2, "docker": 2}
+# upstream publishes it; there is no selecting within one. A tree is tier 1 over
+# a whole upstream directory tree, narrowed only by path patterns. Tier 2
+# rehosts a curated selection where a whole ecosystem is not feasible.
+TIERS = {"yum": 1, "apt": 1, "tree": 1, "generic": 2, "pypi": 2, "npm": 2, "docker": 2}
 
 
 class Mirror(BaseModel):
     name: str
-    type: Literal["yum", "apt", "generic", "pypi", "npm", "docker"]
+    type: Literal["yum", "apt", "tree", "generic", "pypi", "npm", "docker"]
     remote: str
     local: str
     upstream_url: str = ""
@@ -190,6 +259,7 @@ class Mirror(BaseModel):
     interval_seconds: int = Field(default=3600, ge=60)
     yum: YumSource | None = None
     apt: AptSource | None = None
+    tree: TreeSource | None = None
     generic: GenericSource | None = None
     pypi: PypiSource | None = None
     npm: NpmSource | None = None
@@ -204,7 +274,7 @@ class Mirror(BaseModel):
             self.npm = NpmSource()
         if self.type == "docker" and self.docker is None:
             self.docker = DockerSource()
-        sections = {"yum": self.yum, "apt": self.apt, "generic": self.generic, "pypi": self.pypi,
+        sections = {"yum": self.yum, "apt": self.apt, "tree": self.tree, "generic": self.generic, "pypi": self.pypi,
                     "npm": self.npm, "docker": self.docker}
         if sections[self.type] is None:
             raise ValueError(f"mirror {self.name!r} has type {self.type!r} but no {self.type}: section")
@@ -219,6 +289,9 @@ class Mirror(BaseModel):
         if self.tier == 2:
             if self.scope:
                 raise ValueError(f"mirror {self.name!r} is tier 2, which deletes nothing, so scope has no effect; remove it")
+            return self
+        if self.tree is not None:
+            # A tree lists only files under its scope; its patterns cannot reach outside it.
             return self
         if self.apt is not None:
             roots = [self.apt.base]
@@ -239,7 +312,7 @@ class Mirror(BaseModel):
         A change means a previous cycle's result no longer describes the
         wanted state, so the up-to-date short cut must not apply.
         """
-        body = self.model_dump(include={"type", "remote", "local", "scope", "yum", "apt", "generic", "pypi", "npm", "docker"})
+        body = self.model_dump(include={"type", "remote", "local", "scope", "yum", "apt", "tree", "generic", "pypi", "npm", "docker"})
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 

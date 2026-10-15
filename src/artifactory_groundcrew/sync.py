@@ -12,7 +12,7 @@ through the remote since the last cycle. Each file it copies is tagged with why.
 from __future__ import annotations
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -30,8 +30,12 @@ logger = log.get("sync")
 # so files removed from the local repository by hand come back.
 FULL_CHECK_SECONDS = 86400
 PROGRESS_EVERY = 500
+# A progress line at least this often while a stage runs, even if nothing finished.
+PROGRESS_SECONDS = 5
 # Failures logged one by one per stage; the rest are counted in the stage summary.
 FAILURES_LOGGED = 50
+# Upstream's modification time, on each file whose listing has no checksum.
+MTIME_PROPERTY = "groundcrew.mtime"
 
 
 class NotFoundUpstream(RuntimeError):
@@ -46,6 +50,9 @@ class Plan:
     fetch: list[RemoteFile] = field(default_factory=list)
     metadata: list[RemoteFile] = field(default_factory=list)
     delete: list[str] = field(default_factory=list)
+    # Files to fetch that the local repository holds an older version of: the
+    # remote's cached copy is stale too, and is expired first.
+    refresh: set[str] = field(default_factory=set)
     in_scope: int = 0
     roots: dict[str, str] = field(default_factory=dict)
     # The configured list was listed or resolved in full this cycle.
@@ -88,11 +95,13 @@ class Result:
         return {k: v for k, v in d.items() if v not in ("", [], {}, None)}
 
 
-def _needs(want: RemoteFile, have: LocalFile | None) -> bool:
+def _needs(want: RemoteFile, have: LocalFile | None, mtime: str | None = None) -> bool:
     if have is None:
         return True
     if want.sha256 and have.sha256:
         return want.sha256 != have.sha256
+    if want.mtime is not None and mtime != str(want.mtime):
+        return True
     if want.size is not None:
         return want.size != have.size
     return False
@@ -129,9 +138,13 @@ def plan(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: S
     # workers on one path race: one expires it from the cache as the other copies.
     packages = list({f.path: f for f in listing.packages}.values())
     metadata = list({m.path: m for m in listing.metadata}.values())
+    mtimes: dict[str, str | None] = {}
+    if mirror.type == "tree":
+        mtimes = {path: props.get(MTIME_PROPERTY) for path, props in client.list_properties(mirror.local, MTIME_PROPERTY).items()}
     p.listed = len(packages)
-    p.fetch = [f for f in packages if _needs(f, local.get(f.path))]
-    p.metadata = [m for m in metadata if _needs(m, local.get(m.path))]
+    p.fetch = [f for f in packages if _needs(f, local.get(f.path), mtimes.get(f.path))]
+    p.metadata = [m for m in metadata if _needs(m, local.get(m.path), mtimes.get(m.path))]
+    p.refresh = {f.path for f in p.fetch if f.mtime is not None and f.path in local}
     scoped = [path for path in local if path.startswith(mirror.scope) and not path.startswith(demand.ARTIFACTORY_OWNED)]
     p.in_scope = len(scoped)
     p.delete = sorted(path for path in scoped if path not in wanted)
@@ -167,17 +180,38 @@ def _parallel(workers: int, items: list, fn: Callable, label: str, mirror: str) 
     failures: list[tuple[object, Exception]] = []
     done = 0
     last_log = time.monotonic()
+    queued = iter(items)
+    # A bounded window of submitted work: a future per item of a large stage
+    # costs gigabytes before the first one finishes.
+    window = workers * 4
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(fn, it): it for it in items}
-        for fut in as_completed(futures):
-            done += 1
-            try:
-                fut.result()
-            except Exception as exc:  # noqa: BLE001 - every failure is recorded, none is fatal here
-                failures.append((futures[fut], exc))
-                if len(failures) <= FAILURES_LOGGED:
-                    logger.warning("item.failed", mirror=mirror, stage=label, path=_path(futures[fut]), error=_describe(exc))
-            if done < len(items) and (done % PROGRESS_EVERY == 0 or time.monotonic() - last_log > 30):
+        futures: dict = {}
+
+        def top_up() -> None:
+            for it in queued:
+                futures[ex.submit(fn, it)] = it
+                if len(futures) >= window:
+                    return
+
+        top_up()
+        pending = set(futures)
+        while pending:
+            due = max(0.0, last_log + PROGRESS_SECONDS - time.monotonic())
+            finished, pending = wait(pending, timeout=due, return_when=FIRST_COMPLETED)
+            milestone = False
+            for fut in finished:
+                done += 1
+                milestone = milestone or done % PROGRESS_EVERY == 0
+                item = futures.pop(fut)
+                try:
+                    fut.result()
+                except Exception as exc:  # noqa: BLE001 - every failure is recorded, none is fatal here
+                    failures.append((item, exc))
+                    if len(failures) <= FAILURES_LOGGED:
+                        logger.warning("item.failed", mirror=mirror, stage=label, path=_path(item), error=_describe(exc))
+            top_up()
+            pending = set(futures)
+            if pending and (milestone or time.monotonic() - last_log >= PROGRESS_SECONDS):
                 last_log = time.monotonic()
                 logger.info("progress", mirror=mirror, stage=label, done=done, total=len(items), failed=len(failures))
     if items:
@@ -200,11 +234,17 @@ def _describe(exc: Exception) -> str:
 def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Plan, up: Upstream, result: Result) -> None:
     remote, cache, local = mirror.remote, f"{mirror.remote}-cache", mirror.local
 
+    def stamp(f: RemoteFile) -> None:
+        if f.mtime is not None and not f.sha256:
+            client.set_properties(local, f.path, {MTIME_PROPERTY: str(f.mtime)})
+
     def fetch(f: RemoteFile) -> None:
         # pip's listing has usually cached a PyPI package already. One it has
         # not can only be fetched through the remote's PyPI download route.
         # A Docker remote is only ever asked through the registry API: a Sync
         # Download 404 there is remembered, and hides the manifest for 30 minutes.
+        if f.path in p.refresh and f.path not in up.fresh:
+            client.expire(remote, f.path)
         if mirror.type == "docker":
             found = client.docker_fetch(remote, f.path)
         else:
@@ -212,6 +252,7 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
         if not found:
             raise NotFoundUpstream("404 through the remote")
         client.copy(cache, f.path, local)
+        stamp(f)
         if f.source:
             props = {"groundcrew.source": f.source, "groundcrew.requirement": f.requirement,
                      "groundcrew.ingested": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
@@ -238,6 +279,7 @@ def execute(client: ArtifactoryClient, settings: Settings, mirror: Mirror, p: Pl
                     return
                 raise NotFoundUpstream("404 through the remote")
         client.copy(cache, m.path, local)
+        stamp(m)
 
     body = [m for m in p.metadata if not m.root]
     roots = [m for m in p.metadata if m.root]

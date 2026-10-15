@@ -37,12 +37,12 @@ mirrors: []
 | Field | Default | Effect |
 | --- | --- | --- |
 | `name` | | Unique name, used by the CLI and the ledger. |
-| `type` | | `yum` or `apt` (tier 1, a whole repository), or `generic`, `pypi`, `npm` or `docker` (tier 2, a list). A section of the same name holds its source. |
+| `type` | | `yum`, `apt` or `tree` (tier 1, a whole repository or tree), or `generic`, `pypi`, `npm` or `docker` (tier 2, a list). A section of the same name holds its source. |
 | `remote` | | Remote repository key. Artifactory fetches upstream through it. |
 | `local` | | Generic local repository key. The mirror lives here. |
 | `virtual` | | Optional virtual repository created over the local one, and the remote on the source. |
 | `upstream_url` | | Upstream root. Only used to create the remote. |
-| `scope` | whole repository | Tier 1: prefix of the local repository this mirror owns. Unlisted files under it are deleted. Every path, or the apt `base`, must sit under it. Refused on tier 2, which deletes nothing. |
+| `scope` | whole repository | Tier 1: prefix of the local repository this mirror owns. Unlisted files under it are deleted. Every path, or the apt `base`, must sit under it; a tree lists only files under it. Refused on tier 2, which deletes nothing. |
 | `interval_seconds` | `3600` | Time between cycles. A change to what the mirror contains runs one at once. |
 | `enabled` | `true` | |
 
@@ -140,6 +140,47 @@ mirrors:
       base: compute/cuda/repos/ubuntu2404/x86_64
       flat: true
       architectures: [amd64]
+```
+
+### `tree`
+
+Every file in an upstream tree that publishes a `quick-fedora-mirror` file list, as Rocky and Fedora do.
+
+| Field | Effect |
+| --- | --- |
+| `filelist` | The list's path from the remote's root, for example `fullfiletimelist-rocky`. |
+| `include` | Patterns a file's path must match one of. Empty includes everything. |
+| `exclude` | Patterns that drop a file `include` selected. |
+
+Patterns match the path from the remote's root.
+A glob matches the whole path: `*` and `?` stay within one directory, `**` crosses directories, and `**/` also matches none.
+A pattern starting `re:` is a Python regex, searched for anywhere in the path; anchor it with `^`.
+
+A symlink to a file is mirrored as that file.
+A symlink to a directory, such as Rocky's `9`, is mirrored as a copy of its target, so `9/` and `9.8/` are both served and stored once.
+When upstream moves the link to a new minor release, the next cycle follows it and removes what upstream removed.
+Files are compared by modification time, kept on each file as the `groundcrew.mtime` property.
+
+Rocky 9 and 10 as upstream has them, with release keys, without images, ISOs, debug or source packages:
+
+```yaml
+mirrors:
+  - name: rocky
+    type: tree
+    remote: rocky-remote
+    local: rocky
+    virtual: rocky-virtual
+    upstream_url: https://dl.rockylinux.org/pub/rocky/
+    tree:
+      filelist: fullfiletimelist-rocky
+      include: ["9/**", "9.*/**", "10/**", "10.*/**", "RPM-GPG-KEY-Rocky-*"]
+      exclude: ["**/images/**", "**/isos/**", "**/live/**", "**/debug/**", "**/source/**"]
+```
+
+Only BaseOS and AppStream, with a regex:
+
+```yaml
+      exclude: ['re:^(9|10)[.0-9]*/(?!BaseOS/|AppStream/)[^/]+/', "**/debug/**", "**/source/**"]
 ```
 
 ### `generic`

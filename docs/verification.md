@@ -288,3 +288,19 @@ Found by the live run:
 - **A blob shared by several manifests of one image is cached once.** The other manifest folders in the remote cache hold an empty entry for it, and copying that fails with `Could not calculate repo path`.
   The local repository serves the blob by digest from any folder of the image, so Groundcrew now copies each blob once per image.
 
+
+### 2026-10-15, tree enumeration against Rocky's file list
+
+Enumeration only, against `dl.rockylinux.org` directly in place of a remote; not yet run through Artifactory.
+
+- **File list.** `fullfiletimelist-rocky`: version 2, 75 MB, 722,214 files, 5,897 directories and 221 symlinks, with an empty checksum section.
+- **Directory links.** `9` resolved to `9.8`, `10` to `10.2` and `8` to `8.10`, each by one read through the link.
+  `9.0` to `9.7` and `10.0` to `10.1` hold only a `README.txt` pointing at the vault.
+- **Selection.** Including `9/**`, `9.*/**`, `10/**`, `10.*/**` and the top-level keys, excluding images, live media, debug, source and every repository but BaseOS and AppStream:
+  301,922 packages and 768 metadata files, 837 GB, with `9/` and `9.8/` each listing 57,634 AppStream and 16,569 BaseOS files.
+- **Cost.** 148 reads of `repomd.xml` and signatures, and a peak of 283 MiB resident.
+- **Memory of a whole cycle.** All of Rocky 9 and 10 but images, ISOs, live media, debug and source, 674,854 files, run through `run_cycle` with downloads and copies stubbed out.
+  Enumeration reached 360 MiB.
+  Execution peaked at 1,560 MiB, because every file of a stage was submitted to the thread pool at once.
+  Submitting a bounded window of `workers * 4` instead brought the peak to 483 MiB.
+  The chart's memory request is now 1Gi.

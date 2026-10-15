@@ -98,7 +98,7 @@ persistence:
 resources:
   requests:
     cpu: 100m
-    memory: 256Mi
+    memory: 1Gi
 
 # Pod securityContext. Set enabled: false on platforms that assign arbitrary
 # UIDs, such as OpenShift; the image keeps its state dir writable for them.

@@ -41,24 +41,7 @@ def _one(up: Upstream, root: str, listing: Listing, seen: set[str]) -> None:
     if repomd is None:
         raise EnumerationError(f"{repomd_path}: not found upstream")
 
-    data_files: list[RemoteFile] = []
-    primary: RemoteFile | None = None
-    for data in ET.fromstring(repomd).iter(f"{_REPO}data"):
-        loc = data.find(f"{_REPO}location")
-        if loc is None:
-            continue
-        if loc.get(_XML_BASE):
-            raise EnumerationError(f"{repomd_path}: xml:base locations are not supported")
-        ck = data.find(f"{_REPO}checksum")
-        size = data.findtext(f"{_REPO}size")
-        rf = RemoteFile(
-            path=root + loc.get("href", ""),
-            size=int(size) if size else None,
-            sha256=ck.text.strip() if ck is not None and ck.get("type") == "sha256" and ck.text else None,
-        )
-        data_files.append(rf)
-        if data.get("type") == "primary":
-            primary = rf
+    data_files, primary = repomd_files(root, repomd_path, repomd)
     if primary is None:
         raise EnumerationError(f"{repomd_path}: no primary metadata")
 
@@ -86,6 +69,33 @@ def _one(up: Upstream, root: str, listing: Listing, seen: set[str]) -> None:
     listing.metadata.append(RemoteFile(path=repomd_path, size=len(repomd), sha256=sha256(repomd), root=True))
     listing.metadata.extend(sigs)
     listing.roots[repomd_path] = sha256(repomd)
+
+
+def repomd_files(root: str, repomd_path: str, repomd: bytes) -> tuple[list[RemoteFile], RemoteFile | None]:
+    """Every file repomd.xml lists, with its checksum, and the primary among them."""
+    data_files: list[RemoteFile] = []
+    primary: RemoteFile | None = None
+    try:
+        tree = ET.fromstring(repomd)
+    except ET.ParseError as exc:
+        raise EnumerationError(f"{repomd_path}: not valid XML: {exc}") from None
+    for data in tree.iter(f"{_REPO}data"):
+        loc = data.find(f"{_REPO}location")
+        if loc is None:
+            continue
+        if loc.get(_XML_BASE):
+            raise EnumerationError(f"{repomd_path}: xml:base locations are not supported")
+        ck = data.find(f"{_REPO}checksum")
+        size = data.findtext(f"{_REPO}size")
+        rf = RemoteFile(
+            path=root + loc.get("href", ""),
+            size=int(size) if size else None,
+            sha256=ck.text.strip() if ck is not None and ck.get("type") == "sha256" and ck.text else None,
+        )
+        data_files.append(rf)
+        if data.get("type") == "primary":
+            primary = rf
+    return data_files, primary
 
 
 def _packages(root: str, xml: bytes, source: str):

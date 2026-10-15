@@ -12,6 +12,7 @@ Researched 2026-09-23.
 - [Requirements](#requirements)
 - [Where mirrored content lives](#where-mirrored-content-lives)
 - [Full mirrors: yum and apt](#full-mirrors-yum-and-apt)
+  - [Y7. Whole trees from upstream's file list](#y7-whole-trees-from-upstreams-file-list)
 - [Curated lists: docker, PyPI, npm, generic](#curated-lists-docker-pypi-npm-generic)
 - [Comparison](#comparison)
 - [Recommendation](#recommendation)
@@ -163,6 +164,40 @@ A sync job builds the upstream file list and leaves the downloading to Artifacto
   Later syncs touch only the delta.
 
 **Recommended**, and since built and verified on a live instance: see [verification.md](verification.md).
+
+### Y7. Whole trees from upstream's file list
+
+Added 2026-10-15.
+Y6 lists a yum repository from its `repomd.xml`, so it sees repository roots and nothing beside them:
+not the keys, `media.repo` or images next to `repodata/`, nor the release directory around them.
+On Rocky, `9` is a symlink to the current minor release, `9.8`.
+Mirroring `9/` whole, and following it to the next minor release unattended, needs a list of the whole tree.
+
+Rocky and Fedora publish one for `quick-fedora-mirror`.
+`fullfiletimelist-<name>`, at the root, names every file, directory and symlink with its modification time and size.
+Read through the remote like any metadata, it replaces `rsync --list-only` in Y6 step 1; the rest of Y6 is unchanged.
+
+- **Selection by path.** Include and exclude patterns, as globs or `re:` regexes.
+  This is the only tier 1 type that selects within upstream, and only by path.
+  One Rocky release is about 2.2 TB, most of it ISOs, images, debug and source packages.
+- **Symlinks.** The list gives a link's target length, not its target.
+  A link to a file is fetched at its own path, and upstream's web server follows it.
+  A link to a directory is copied under its own name, from the sibling directory whose name is as long as the target.
+  Candidates of equal length are told apart by reading, through the link, a file only one of them has.
+  `9/` and `9.8/` are then both held, stored once.
+- **Changes.** The list has no checksums.
+  Each file carries upstream's mtime as the `groundcrew.mtime` property, and a different mtime fetches it again, after expiring the remote's cached copy.
+  Retargeting a symlink recreates it, so its mtime moves too.
+  `repomd.xml`, its key and its signature are read and compared by checksum, and the files `repomd.xml` lists by the checksums it gives.
+- **Consistency.** Each `repomd.xml` must list only files the list has, or the cycle stops as upstream mid-update.
+  Files under `repodata/` are published after every other file, with each `repomd.xml` and its signature last.
+- **Polling.** The list is the probe; an unchanged list skips the cycle.
+- Cost: Rocky's list is 75 MB and 728,000 lines, read every cycle.
+  Parsing it took about 360 MiB of memory, and a whole cycle of Rocky 9 and 10, 675,000 files, peaked at 483 MiB.
+- Not handled: a directory link inside another link's target is mirrored only at its own path.
+  A link with no sibling of its target's length, or with both a file and a directory of that length, is skipped and logged as `tree.link_skipped`.
+
+**Built** 2026-10-15, for upstreams that publish such a list.
 
 ## Curated lists: docker, PyPI, npm, generic
 

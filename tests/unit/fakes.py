@@ -297,3 +297,33 @@ def docker_image(art: FakeArtifactory, remote: str, image: str, tag: str,
     refs[(image, tag)] = (index, OCI_INDEX, f"{image}/{tag}/list.manifest.json")
     files[f"{image}/{tag}/list.manifest.json"] = index
     return folders
+
+
+def tree_upstream(files: dict[str, bytes], links: dict[str, str] | None = None,
+                  mtimes: dict[str, int] | None = None, filelist: str = "fullfiletimelist-test") -> dict[str, bytes]:
+    """An upstream tree and its quick-fedora-mirror file list.
+
+    ``links`` maps a symlink to its target beside it, as a name. Upstream's web
+    server follows links, so the tree serves each link's files under its own path.
+    """
+    links = links or {}
+    mtimes = mtimes or {}
+    dirs = {"/".join(p.split("/")[:i]) for p in files for i in range(1, p.count("/") + 1)}
+    lines = [f"{mtimes.get(d, 1000)}\td\t4096\t{d}" for d in sorted(dirs)]
+    lines += [f"{mtimes.get(p, 1000)}\tf\t{len(b)}\t{p}" for p, b in sorted(files.items())]
+    lines += [f"{mtimes.get(link, 1000)}\tl\t{len(target)}\t{link}" for link, target in sorted(links.items())]
+    served = dict(files)
+
+    def target(link):
+        parent = link.rpartition("/")[0]
+        return f"{parent}/{links[link]}" if parent else links[link]
+
+    for link in links:
+        if target(link) in files:
+            served[link] = files[target(link)]
+    for link in links:
+        for p, body in list(served.items()):
+            if p.startswith(target(link) + "/"):
+                served[link + p[len(target(link)):]] = body
+    served[filelist] = ("[Version]\n2\n\n[Files]\n" + "\n".join(lines) + "\n\n[Checksums SHA1]\n\n[End]\n").encode()
+    return served

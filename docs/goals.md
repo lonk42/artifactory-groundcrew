@@ -2,6 +2,7 @@
 
 Agreed 2026-09-23.
 Tier 2 amended 2026-10-08: it only adds, and clients' pulls add to it ([design](design.md#tier-2-additive-and-demand-driven)).
+Tier 1 amended 2026-10-15: a tree mirror narrows by path pattern ([design](design.md#y7-whole-trees-from-upstreams-file-list)).
 
 ## Goals
 
@@ -10,8 +11,9 @@ Tier 2 amended 2026-10-08: it only adds, and clients' pulls add to it ([design](
    Docker images keep their upstream digests.
    PyPI and npm are indexed by Artifactory over package files that stay identical.
 2. **Two tiers.**
-   Tier 1 is Linux package repositories, yum and apt, synced whole and served exactly as the source publishes them.
-   A tier 1 mirror has no package selection; suites, components and architectures are the only narrowing.
+   Tier 1 is Linux package repositories, yum and apt, and whole upstream trees, synced whole and served exactly as the source publishes them.
+   A tier 1 mirror has no package selection.
+   Suites, components and architectures narrow apt; include and exclude path patterns narrow a tree.
    Tier 2 is everything else: docker, PyPI, npm and generic.
    Syncing a whole ecosystem is not feasible, so a list in git selects what is rehosted, and each entry brings its dependencies.
    What clients pull through the remote is rehosted too.

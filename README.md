@@ -17,6 +17,7 @@ Mirrors come in two tiers.
 | Tier | Types | Content |
 | --- | --- | --- |
 | 1 | `yum`, `apt` | A Linux package repository, whole, served as upstream publishes it |
+| 1 | `tree` | Every file in an upstream tree, from its `quick-fedora-mirror` file list, narrowed by path patterns, with symlinked directories followed |
 | 2 | `generic` | A list of files, rehosted at their upstream paths, plus files clients pull |
 | 2 | `pypi` | A list of requirements and their dependencies, resolved by pip for each target Python and platform, plus packages clients pull |
 | 2 | `npm` | A list of packages and their dependencies, resolved by npm, plus packages clients pull |
@@ -28,6 +29,8 @@ Mirrors come in two tiers.
 - **Formats.**
   yum reads gzip, xz, bzip2 and zstd metadata.
   apt covers suite archives and flat repositories (`deb URL /`), with by-hash indexes and the `cnf` and `dep11` indexes Ubuntu clients fetch.
+  A tree mirrors a whole Rocky or Fedora tree, so `9/` follows each new minor release.
+  [Detail](docs/configuration.md#tree)
 - **PyPI and npm.**
   pip or npm resolves each list entry through the remote, and the files are copied into a PyPI or npm local repository.
   Artifactory builds the index, which lists only mirrored files, and the files keep upstream's hashes.
@@ -50,7 +53,7 @@ Mirrors come in two tiers.
   Each copied file carries `groundcrew.*` properties saying whether it came from the list or a pull, and who pulled it.
   [Detail](docs/design.md#tier-2-additive-and-demand-driven)
 - **Polling.**
-  A cycle reads only `repomd.xml` or `InRelease` until upstream changes, and lists everything at least daily.
+  A cycle reads only `repomd.xml`, `InRelease` or a tree's file list until upstream changes, and lists everything at least daily.
   Tier 2 lists are resolved daily, and pulls are copied every cycle.
 - **Repository creation.**
   Optional.
@@ -147,7 +150,9 @@ Alert on the `parked` log event and on the age of each mirror's last successful 
 ## Limitations
 
 - Tier 1 mirrors a repository whole.
-  Suites, components and architectures narrow an apt mirror; nothing selects individual packages.
+  Suites, components and architectures narrow an apt mirror, and path patterns a tree; nothing selects individual packages.
+- A tree reads its whole file list every cycle, 75 MB for Rocky.
+  A directory symlink inside another symlink's target is mirrored only at its own path.
 - yum repositories using `xml:base` locations are refused.
 - PyPI resolves wheels only.
   A list requirement with no wheel for a target fails the cycle with `No matching distribution found`.
