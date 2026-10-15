@@ -72,6 +72,7 @@ def _loop(settings: Settings) -> int:
     client = ArtifactoryClient.from_settings(settings)
     repos_done = False
     attempt = 0
+    held: set[str] = set()
     while not _stopping:
         try:
             client.ping()
@@ -99,7 +100,22 @@ def _loop(settings: Settings) -> int:
         for mirror in settings.mirrors:
             if _stopping:
                 break
-            if not mirror.enabled or not _due(state, mirror, settings.retry_seconds):
+            # A request from `groundcrew run` overrides the schedule, a pause and `enabled`.
+            req = state.take_request(mirror.name)
+            if req is not None:
+                logger.info("mirror.requested", mirror=mirror.name, full=req.get("full", False))
+                run_cycle(client, settings, mirror, state, full=bool(req.get("full")))
+                continue
+            if not mirror.enabled:
+                continue
+            pause = state.paused(mirror.name)
+            if pause and mirror.name not in held:
+                held.add(mirror.name)
+                logger.info("mirror.paused", mirror=mirror.name, **pause)
+            elif not pause and mirror.name in held:
+                held.discard(mirror.name)
+                logger.info("mirror.resumed", mirror=mirror.name)
+            if pause or not _due(state, mirror, settings.retry_seconds):
                 continue
             run_cycle(client, settings, mirror, state)
         _sleep(settings.idle_seconds)

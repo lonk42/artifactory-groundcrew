@@ -34,7 +34,15 @@ def _parser() -> argparse.ArgumentParser:
     pl.add_argument("mirror")
     pl.add_argument("--full", action="store_true", help="list everything even if upstream is unchanged")
     pl.add_argument("--show", type=int, default=5, help="sample paths to print per list")
-    s = sub.add_parser("sync", help="run one cycle now")
+    pa = sub.add_parser("pause", help="stop the daemon starting cycles, for one mirror or all")
+    pa.add_argument("mirror", nargs="?", help="omit to pause every mirror")
+    pa.add_argument("--reason", default="", help="shown by status and logged by the daemon")
+    re_ = sub.add_parser("resume", help="lift a pause set by pause")
+    re_.add_argument("mirror", nargs="?", help="omit to lift the global pause")
+    rn = sub.add_parser("run", help="ask the daemon to run a cycle at its next loop, paused or not")
+    rn.add_argument("mirror")
+    rn.add_argument("--full", action="store_true", help="list everything even if upstream is unchanged")
+    s = sub.add_parser("sync", help="run one cycle now in this process, paused or not")
     s.add_argument("mirror")
     s.add_argument("--full", action="store_true", help="list everything even if upstream is unchanged")
     pv = sub.add_parser("provenance", help="why each file of a tier 2 mirror was mirrored")
@@ -65,6 +73,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "cycles":
         out(views.cycles(state, args.mirror, args.n), "table")
+        return 0
+    if args.cmd in ("pause", "resume", "run"):
+        if args.mirror and args.mirror not in {m.name for m in settings.mirrors}:
+            print(f"groundcrew: no mirror named {args.mirror!r}", file=sys.stderr)
+            return 2
+        if args.cmd == "run":
+            state.request(args.mirror, args.full)
+            print(f"requested a cycle of {args.mirror}; the daemon starts it within {settings.idle_seconds}s"
+                  " of finishing any cycle in progress. Follow it with: groundcrew cycles " + args.mirror)
+            return 0
+        target = args.mirror or "all mirrors"
+        if args.cmd == "pause":
+            state.pause(args.mirror, args.reason)
+            print(f"paused {target}; a cycle already running finishes first")
+        elif state.resume(args.mirror):
+            print(f"resumed {target}")
+        else:
+            print(f"{target} was not paused", file=sys.stderr)
+        if args.cmd == "resume" and args.mirror and state.paused(args.mirror):
+            print(f"{args.mirror} is still held by the pause on all mirrors", file=sys.stderr)
         return 0
 
     try:

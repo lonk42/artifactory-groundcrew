@@ -44,6 +44,45 @@ class State:
     def save_mirror(self, name: str, data: dict[str, Any]) -> None:
         write_json_atomic(self.mirror_path(name), data)
 
+    def pause_path(self, name: str | None) -> Path:
+        return self.root / "pause" / ("all" if name is None else f"mirrors/{name}")
+
+    def pause(self, name: str | None, reason: str = "") -> None:
+        """Stop the daemon starting cycles: for one mirror, or for all when ``name`` is None."""
+        write_json_atomic(self.pause_path(name), {"since": time.time(), "reason": reason})
+
+    def resume(self, name: str | None) -> bool:
+        """Lift a pause. Returns False when there was none."""
+        try:
+            self.pause_path(name).unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def paused(self, name: str) -> dict[str, Any] | None:
+        """The pause holding this mirror, its own before the global one, or None."""
+        for path in (self.pause_path(name), self.pause_path(None)):
+            if path.exists():
+                return {"scope": "all" if path == self.pause_path(None) else name, **(read_json(path) or {})}
+        return None
+
+    def request_path(self, name: str) -> Path:
+        return self.root / "requests" / name
+
+    def request(self, name: str, full: bool = False) -> None:
+        """Ask the daemon to run this mirror at its next loop, paused or not."""
+        write_json_atomic(self.request_path(name), {"since": time.time(), "full": full})
+
+    def requested(self, name: str) -> dict[str, Any] | None:
+        return read_json(self.request_path(name))
+
+    def take_request(self, name: str) -> dict[str, Any] | None:
+        """Read and clear a request, so one made during the cycle it starts runs again."""
+        req = self.requested(name)
+        if req is not None:
+            self.request_path(name).unlink(missing_ok=True)
+        return req
+
     @property
     def ledger_path(self) -> Path:
         return self.root / "cycles.jsonl"

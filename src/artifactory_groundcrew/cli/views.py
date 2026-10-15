@@ -38,9 +38,12 @@ def status(settings: Settings, state: State) -> list[dict[str, Any]]:
     for m in settings.mirrors:
         st = state.mirror(m.name)
         last = next(iter(state.cycles(m.name, limit=1)), {})
+        pause = state.paused(m.name)
         out.append({
             "name": m.name,
             "status": st.get("status", "never run"),
+            "paused": f"{pause['scope']}, {_ago(now, pause.get('since'))}" if pause else "",
+            "run_requested": _ago(now, req.get("since")) if (req := state.requested(m.name)) else "",
             "last_ok": _ago(now, st.get("last_ok")),
             "last_run": _ago(now, st.get("last_run")),
             "last_cycle": last.get("status", ""),

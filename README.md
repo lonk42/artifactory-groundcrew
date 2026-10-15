@@ -58,7 +58,7 @@ Mirrors come in two tiers.
 - **Repository creation.**
   Optional.
 - **Operator CLI.**
-  Status, cycle history, dry-run plans and manual cycles.
+  Status, cycle history, dry-run plans, pausing and manual cycles.
 
 ## Requirements
 
@@ -130,14 +130,17 @@ Every setting is in [docs/configuration.md](docs/configuration.md).
 ## CLI
 
 The daemon runs each mirror on its interval, and at once when its configuration changes.
-The CLI, run inside the pod, reads its state and runs a cycle on demand.
+The CLI, run inside the pod, reads its state, pauses the daemon and runs a cycle on demand.
 
 ```sh
 groundcrew mirrors                 # Configured mirrors, with their tier
 groundcrew status                  # Last result per mirror
 groundcrew cycles rocky9-baseos    # Recent cycles from the ledger
 groundcrew plan rocky9-baseos      # What a cycle would do, changing nothing
-groundcrew sync rocky9-baseos      # Run a cycle now
+groundcrew pause rocky9-baseos     # Stop the daemon starting cycles for one mirror; omit the name for all
+groundcrew resume rocky9-baseos    # Lift that pause
+groundcrew run rocky9-baseos       # Ask the daemon to run a cycle at its next loop, paused or not
+groundcrew sync rocky9-baseos      # Run a cycle now in this shell, paused or not
 groundcrew provenance pypi         # Why each file of a tier 2 mirror is there
 groundcrew repos --apply           # Create the repositories mirrors need
 ```
