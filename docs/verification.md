@@ -304,3 +304,34 @@ Enumeration only, against `dl.rockylinux.org` directly in place of a remote; not
   Execution peaked at 1,560 MiB, because every file of a stage was submitted to the thread pool at once.
   Submitting a bounded window of `workers * 4` instead brought the peak to 483 MiB.
   The chart's memory request is now 1Gi.
+
+### 2026-10-15, Groundcrew 0.5.0: tree on Kubernetes
+
+The published 0.5.0 image deployed by the Helm chart, memory request 1Gi, against a JFrog Cloud instance.
+One tree mirror of Rocky's `extras` for 9 and 10, through `9`, `9.*`, `10` and `10.*`, with the vault READMEs and the top-level keys.
+
+- **Links.** `9` resolved to `9.8`, `10` to `10.2` and `8` to `8.10` through the remote.
+- **First cycle.** 220 files and 32 metadata files, 146 MB, in 75 seconds; `progress` every 5 seconds.
+  `9/` and `9.8/` held the same 76 files with the same checksums, and `10/` and `10.2/` the same 42.
+  Every non-metadata file carried `groundcrew.mtime`.
+- **Clients, against the local repository only.** Clean `rockylinux/rockylinux:9` and `:10`, stock repositories and keys removed, `gpgcheck=1`, `repo_gpgcheck=1`, key `RPM-GPG-KEY-Rocky-<n>` from the mirror.
+  Each installed `epel-release` from `extras` through both the link path and the minor release path.
+- **Later cycles.** A second cycle was `unchanged`, and a full plan had nothing to fetch, publish or delete among 252 files in scope.
+- **Memory.** The pod's cgroup peaked at 177 MiB over the first cycles of all five mirrors, and at 273 MiB with a CLI `sync` and full `plan` running in the same container.
+
+### 2026-10-15, Groundcrew 0.5.0: tree at scale on Kubernetes
+
+Same deployment, the tree widened to x86_64 BaseOS, AppStream and extras of 9 and 10.
+
+- **First cycle.** 47,512 files, 188 GB, and 90 metadata files in 3 hours 18 minutes, none failed.
+  `9/` and `9.8/` held the same 13,885 files with the same checksums, and `10/` and `10.2/` the same 10,034.
+  The local repository used 91 GB.
+- **Memory.** The cgroup peaked at 177 MiB, while the file list was parsed; downloads ran at 60 to 136 MiB.
+- **Clients, against the local repository only.** Clean `rockylinux/rockylinux:9` and `:10`, stock repositories and keys replaced, `gpgcheck=1`, `repo_gpgcheck=1`, the key from the mirror: `dnf install httpd tmux` resolved and installed from BaseOS and AppStream.
+
+Found by the run, and fixed in 0.5.1:
+
+- **AQL results are capped, silently.** JFrog Cloud returns at most 500,000 rows, and a property projection is a row per property, not per file.
+  These RPMs carry 13 to 26 properties each, so the `groundcrew.mtime` query returned 29,085 of 47,732 files, and the next full plan would have fetched the other 18,647 again.
+  The mtime is now read with a projection of that one property, and every listing is paged with `sort`, `offset` and `limit`.
+  A full plan then had nothing to fetch.

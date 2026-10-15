@@ -138,9 +138,7 @@ def plan(client: ArtifactoryClient, settings: Settings, mirror: Mirror, state: S
     # workers on one path race: one expires it from the cache as the other copies.
     packages = list({f.path: f for f in listing.packages}.values())
     metadata = list({m.path: m for m in listing.metadata}.values())
-    mtimes: dict[str, str | None] = {}
-    if mirror.type == "tree":
-        mtimes = {path: props.get(MTIME_PROPERTY) for path, props in client.list_properties(mirror.local, MTIME_PROPERTY).items()}
+    mtimes = client.list_property(mirror.local, MTIME_PROPERTY) if mirror.type == "tree" else {}
     p.listed = len(packages)
     p.fetch = [f for f in packages if _needs(f, local.get(f.path), mtimes.get(f.path))]
     p.metadata = [m for m in metadata if _needs(m, local.get(m.path), mtimes.get(m.path))]

@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 from urllib.parse import quote
 
 import httpx
@@ -26,6 +26,9 @@ logger = log.get("artifactory")
 
 # Artifactory refuses AQL over 6000 characters.
 AQL_MAX_CHARS = 5000
+# Rows per AQL page. Artifactory caps one result, silently (500,000 rows on
+# JFrog Cloud), and a property projection is a row per property, not per file.
+AQL_PAGE = 50_000
 
 DOCKER_ACCEPT = ", ".join([
     "application/vnd.oci.image.index.v1+json",
@@ -347,13 +350,29 @@ class ArtifactoryClient:
                          {"property.key": {"$match": f"{prefix}*"}}]}
         query = f'items.find({json.dumps(crit)}).include("repo","path","name","property.key","property.value")'
         out: dict[str, dict[str, str]] = {}
-        for row in self.aql(query):
+        for row in self.aql_pages(query):
             folder = row.get("path") or "."
             path = row["name"] if folder == "." else f"{folder}/{row['name']}"
             props = out.setdefault(path, {})
             for p in row.get("properties", []):
                 if p["key"].startswith(prefix):
                     props[p["key"]] = ",".join(filter(None, [props.get(p["key"]), p.get("value", "")]))
+        return out
+
+    def list_property(self, repo: str, key: str) -> dict[str, str]:
+        """One property's value on every file carrying it, keyed by path.
+
+        Projects only that property, so a file is one row however many
+        properties Artifactory has added to it.
+        """
+        crit = {"$and": [{"repo": {"$eq": repo}}, {"type": {"$eq": "file"}}, {"property.key": {"$eq": key}}]}
+        query = f'items.find({json.dumps(crit)}).include("repo","path","name","@{key}")'
+        out: dict[str, str] = {}
+        for row in self.aql_pages(query):
+            folder = row.get("path") or "."
+            path = row["name"] if folder == "." else f"{folder}/{row['name']}"
+            values = [p.get("value", "") for p in row.get("properties", []) if p.get("key") == key]
+            out[path] = ",".join(filter(None, values))
         return out
 
     @retry(**_RETRY)
@@ -377,6 +396,20 @@ class ArtifactoryClient:
         r.raise_for_status()
         return r.json().get("results", [])
 
+    def aql_pages(self, query: str) -> Iterator[dict[str, Any]]:
+        """Every row of an items query, a page at a time in a stable order.
+
+        A page may hold fewer rows than asked even with more to come, since
+        Artifactory groups a property projection by file; only an empty page ends it.
+        """
+        offset = 0
+        while True:
+            rows = self.aql(f'{query}.sort({{"$asc":["repo","path","name"]}}).offset({offset}).limit({AQL_PAGE})')
+            if not rows:
+                return
+            yield from rows
+            offset += AQL_PAGE
+
     def list_files(self, repo: str) -> dict[str, LocalFile]:
         """Every file in a repository, keyed by path.
 
@@ -390,7 +423,7 @@ class ArtifactoryClient:
             '.include("repo","path","name","size","sha256","created_by")'
         )
         out: dict[str, LocalFile] = {}
-        for row in self.aql(query):
+        for row in self.aql_pages(query):
             folder = row.get("path") or "."
             name = row["name"]
             path = name if folder == "." else f"{folder}/{name}"

@@ -117,6 +117,9 @@ class FakeArtifactory:
         return {path: {k: v for k, v in props.items() if k.startswith(prefix)}
                 for (r, path), props in self.props.items() if r == repo}
 
+    def list_property(self, repo, key):
+        return {path: props[key] for (r, path), props in self.props.items() if r == repo and key in props}
+
     def npmrc(self, remote):
         return f"registry={self.base_url}/api/npm/{remote}/\n//art.example/artifactory/api/npm/{remote}/:_authToken=SECRET\n"
 
